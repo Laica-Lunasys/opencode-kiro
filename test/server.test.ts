@@ -1,921 +1,958 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
-import type { AuthHook, Config, PluginInput, ProviderHook } from "@opencode-ai/plugin"
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest"
-import { listModels, verifyAuth } from "kiro-acp-ai-provider"
-import serverPlugin, { enableSidebarConfig, notifyIfTokenExpired, readToken } from "../src/server"
+import { fileURLToPath } from "node:url"
+import { execFile } from "node:child_process"
+import type { Plugin } from "@opencode-ai/plugin"
+import type { ModelWithEfforts } from "kiro-acp-ai-provider"
+import { createKiroAcp, listModels, verifyAuth } from "kiro-acp-ai-provider"
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
+import serverPlugin from "../src/server"
 
-// Auth hook contract tests. The authorize() browser/poll flow isn't unit-tested
-// (it spawns kiro-cli); we assert only the method shape and the loader return.
+// v2 behavior suite (task 08). Everything is driven through
+// `serverPlugin.setup(mockContext)` plus module mocks — never through module
+// internals. Assertions come from the acceptance criteria of tasks 05/06/07
+// and the migration doc's Test matrix (Auth/Models/Variants/AISDK/Lifecycle).
 
-// The auth gate is kiro-cli whoami via the SDK's verifyAuth(); mock it so unit
-// tests drive logged-in / logged-out states without spawning kiro-cli or needing
-// the SDK build. readToken/notifyIfTokenExpired consume the boolean only.
-// Runtime discovery is mocked so provider.models tests never spawn kiro-cli.
+// Hermetic: the SDK is mocked so no kiro-cli is ever spawned and no network is
+// touched; child_process.execFile is mocked so the login flow gets a fake
+// killable child; login poll/timeout tests use fake timers.
 vi.mock("kiro-acp-ai-provider", () => ({
-  verifyAuth: vi.fn(() => ({ installed: true, authenticated: true })),
-  listModels: vi.fn(async () => []),
+  verifyAuth: vi.fn(),
+  listModels: vi.fn(),
+  createKiroAcp: vi.fn(),
 }))
+vi.mock("node:child_process", () => ({
+  execFile: vi.fn(),
+}))
+
 const mockVerifyAuth = vi.mocked(verifyAuth)
 const mockListModels = vi.mocked(listModels)
+const mockCreateKiroAcp = vi.mocked(createKiroAcp)
+const mockExecFile = vi.mocked(execFile)
 
-// authorize()'s not-authed branch spawns `kiro-cli login`; stub child_process so
-// the consent-write tests exercise the poll branch without launching a real binary.
-vi.mock("node:child_process", () => ({
-  execFile: vi.fn(() => ({ kill: vi.fn() })),
-}))
+// ---------------------------------------------------------------------------
+// shared harness
+// ---------------------------------------------------------------------------
 
-// Default to logged-in for every test (the common case: kiro-cli auto-re-auths);
-// individual tests override to authenticated:false to exercise the failed/nudge
-// paths. Reset each test so a prior implementation/return value never leaks.
+/** fake killable login child returned by the mocked execFile */
+function makeFakeChild() {
+  return { kill: vi.fn(() => true), killed: false }
+}
+
+/** owned SDK instances created by the mocked createKiroAcp, in creation order */
+let sdkInstances: Array<{
+  languageModel: ReturnType<typeof vi.fn>
+  shutdown: ReturnType<typeof vi.fn>
+}> = []
+
+function makeSdkInstance() {
+  const instance = {
+    languageModel: vi.fn((modelId: string) => ({ modelId })),
+    shutdown: vi.fn(async () => {}),
+  }
+  sdkInstances.push(instance)
+  return instance
+}
+
+/**
+ * Controllable async event stream backing `context.event.subscribe()`.
+ * `push()` delivers one event to the (single) consumer; `return()` is a spy so
+ * cleanup's iterator shutdown is observable.
+ */
+function createEventStream() {
+  const queue: unknown[] = []
+  let notify: (() => void) | undefined
+  let ended = false
+  const wake = () => {
+    const resolve = notify
+    notify = undefined
+    resolve?.()
+  }
+  const returned = vi.fn(async () => {
+    ended = true
+    wake()
+    return { value: undefined, done: true as const }
+  })
+  const iterator = {
+    async next(): Promise<IteratorResult<unknown>> {
+      while (true) {
+        if (queue.length > 0) return { value: queue.shift(), done: false }
+        if (ended) return { value: undefined, done: true }
+        await new Promise<void>((resolve) => {
+          notify = resolve
+        })
+      }
+    },
+    return: returned,
+    [Symbol.asyncIterator]() {
+      return this
+    },
+  }
+  return {
+    iterable: iterator as AsyncIterable<unknown>,
+    push(event: unknown) {
+      queue.push(event)
+      wake()
+    },
+    returned,
+  }
+}
+
+/** hand-built IntegrationDraft mock recording upserts + method registrations */
+function makeIntegrationDraft() {
+  const integrations = new Map<string, { id: string; name: string }>()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const methods: any[] = []
+  const draft = {
+    list: () => [...integrations.values()],
+    get: (id: string) => integrations.get(id),
+    update(id: string, update: (integration: { id: string; name: string }) => void) {
+      const record = integrations.get(id) ?? { id, name: "" }
+      update(record)
+      integrations.set(id, record)
+    },
+    remove(id: string) {
+      integrations.delete(id)
+    },
+    method: {
+      list: () => [],
+      update(registration: unknown) {
+        methods.push(registration)
+      },
+      remove() {},
+    },
+  }
+  return { draft, integrations, methods }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MutableCatalogModel = any
+type CatalogProviderRecord = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  provider: any
+  models: Map<string, MutableCatalogModel>
+}
+
+/**
+ * Hand-built CatalogDraft mock. `provider.get` never upserts (matches the
+ * installed d.ts contract the transform relies on to detect a rich models.dev
+ * entry); `provider.update`/`model.update` initialize missing records.
+ */
+function makeCatalogDraft() {
+  const providers = new Map<string, CatalogProviderRecord>()
+  const ensureProvider = (providerID: string): CatalogProviderRecord => {
+    let record = providers.get(providerID)
+    if (record === undefined) {
+      record = { provider: { id: providerID, name: "", settings: {} }, models: new Map() }
+      providers.set(providerID, record)
+    }
+    return record
+  }
+  const ensureModel = (providerID: string, modelID: string): MutableCatalogModel => {
+    const record = ensureProvider(providerID)
+    let model = record.models.get(modelID)
+    if (model === undefined) {
+      model = {
+        modelID,
+        name: "",
+        variants: [],
+        settings: {},
+        limit: { context: 0, output: 0 },
+      }
+      record.models.set(modelID, model)
+    }
+    return model
+  }
+  const draft = {
+    provider: {
+      list: () => [...providers.values()],
+      get: (providerID: string) => providers.get(providerID),
+      update(providerID: string, update: (provider: unknown) => void) {
+        update(ensureProvider(providerID).provider)
+      },
+      remove(providerID: string) {
+        providers.delete(providerID)
+      },
+    },
+    model: {
+      get: (providerID: string, modelID: string) => providers.get(providerID)?.models.get(modelID),
+      update(providerID: string, modelID: string, update: (model: MutableCatalogModel) => void) {
+        update(ensureModel(providerID, modelID))
+      },
+      remove(providerID: string, modelID: string) {
+        providers.get(providerID)?.models.delete(modelID)
+      },
+      default: { get: () => undefined, set: () => {} },
+    },
+  }
+  return { draft, providers, ensureModel }
+}
+
+/** seed a rich models.dev-style Kiro entry into a catalog draft mock */
+function seedRichKiro(
+  catalog: ReturnType<typeof makeCatalogDraft>,
+  models: Array<{ key: string; modelID: string; [extra: string]: unknown }>,
+) {
+  for (const { key, modelID, ...extra } of models) {
+    const model = catalog.ensureModel("kiro", key)
+    model.modelID = modelID
+    Object.assign(model, extra)
+  }
+}
+
+/** runtime ModelWithEfforts factory */
+function runtime(modelId: string, over: Partial<ModelWithEfforts> = {}): ModelWithEfforts {
+  return { modelId, name: modelId, runtimeEfforts: [], ...over }
+}
+
+const tmpDirs: string[] = []
+
+/**
+ * Mock v2 plugin context: records the registered integration/catalog transform
+ * callbacks and the sdk hook callback, exposes controllable connection state,
+ * a spied reload, a controllable event stream, and per-registration disposer
+ * spies. `integration.list()` yields a hermetic temp directory location.
+ */
+function makeMockContext() {
+  const directory = mkdtempSync(join(tmpdir(), "kiro-v2-test-"))
+  tmpDirs.push(directory)
+
+  let integrationTransformCb: ((draft: unknown) => void) | undefined
+  let catalogTransformCb: ((draft: unknown) => void) | undefined
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let sdkHookCb: ((event: any) => Promise<void> | void) | undefined
+  let sdkHookName: string | undefined
+
+  const disposeSpies = {
+    integration: vi.fn(async () => {}),
+    catalog: vi.fn(async () => {}),
+    hook: vi.fn(async () => {}),
+  }
+  const reload = vi.fn(async () => {})
+  const active = vi.fn(async (): Promise<unknown> => undefined)
+  const events = createEventStream()
+
+  const raw = {
+    integration: {
+      transform: vi.fn(async (cb: (draft: unknown) => void) => {
+        integrationTransformCb = cb
+        return { dispose: disposeSpies.integration }
+      }),
+      list: vi.fn(async () => ({ location: { directory } })),
+      connection: { active, resolve: vi.fn(async () => undefined) },
+    },
+    catalog: {
+      transform: vi.fn(async (cb: (draft: unknown) => void) => {
+        catalogTransformCb = cb
+        return { dispose: disposeSpies.catalog }
+      }),
+      reload,
+    },
+    aisdk: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      hook: vi.fn(async (name: string, cb: (event: any) => Promise<void> | void) => {
+        sdkHookName = name
+        sdkHookCb = cb
+        return { dispose: disposeSpies.hook }
+      }),
+    },
+    event: { subscribe: vi.fn(() => events.iterable) },
+  }
+
+  return {
+    context: raw as unknown as Plugin.Context,
+    raw,
+    directory,
+    reload,
+    active,
+    events,
+    disposeSpies,
+    integrationTransform: (draft: unknown) => {
+      if (integrationTransformCb === undefined) throw new Error("integration transform not registered")
+      integrationTransformCb(draft)
+    },
+    catalogTransform: (draft: unknown) => {
+      if (catalogTransformCb === undefined) throw new Error("catalog transform not registered")
+      catalogTransformCb(draft)
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    sdkHook: (event: any) => {
+      if (sdkHookCb === undefined) throw new Error("sdk hook not registered")
+      return sdkHookCb(event)
+    },
+    getSdkHookName: () => sdkHookName,
+  }
+}
+
+type Harness = ReturnType<typeof makeMockContext>
+
+/** drain macrotask+microtask chains (event consumer, fire-and-forget discovery) */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+}
+
+/** run setup, asserting the v2 contract that it returns a Cleanup function */
+async function runSetup(h: Harness): Promise<() => Promise<void> | void> {
+  const cleanup = await serverPlugin.setup(h.context)
+  if (typeof cleanup !== "function") throw new Error("setup must return a cleanup function")
+  return cleanup
+}
+
+/** run setup and capture the OAuth authorize() registered via the integration transform */
+async function setupWithAuthorize(h: Harness) {
+  const cleanup = await runSetup(h)
+  const integration = makeIntegrationDraft()
+  h.integrationTransform(integration.draft)
+  const registration = integration.methods[0]
+  expect(registration).toBeDefined()
+  return {
+    cleanup,
+    authorize: registration.authorize as (
+      inputs: Record<string, string>,
+    ) => Promise<{ url: string; instructions: string; mode: string; callback: Promise<unknown> }>,
+  }
+}
+
+const kiroEvent = () => ({ type: "integration.connection.updated", data: { integrationID: "kiro" } })
+
+const EXPECTED_CREDENTIAL = {
+  type: "oauth",
+  methodID: "kiro-cli-login",
+  refresh: "",
+  access: "kiro-cli",
+  expires: 0,
+}
+
 beforeEach(() => {
+  sdkInstances = []
   mockVerifyAuth.mockReset()
   mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
   mockListModels.mockReset()
   mockListModels.mockResolvedValue([])
+  mockCreateKiroAcp.mockReset()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mockCreateKiroAcp.mockImplementation(() => makeSdkInstance() as any)
+  mockExecFile.mockReset()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mockExecFile.mockImplementation(() => makeFakeChild() as any)
 })
 
-// Isolate XDG_CONFIG_HOME (tui.json) and XDG_DATA_HOME (auth.json) for the whole
-// file so neither the consent writer nor the config-hook credential probe ever
-// touches the developer's real ~/.config or ~/.local/share. The data dir starts
-// EMPTY, so hasStoredKiroCredential() defaults to false everywhere; the config
-// suite writes its own auth.json per case.
-let xdgDir: string
-let prevXdg: string | undefined
-let xdgDataDir: string
-let prevXdgData: string | undefined
-beforeAll(() => {
-  prevXdg = process.env.XDG_CONFIG_HOME
-  xdgDir = mkdtempSync(join(tmpdir(), "kiro-tui-test-"))
-  process.env.XDG_CONFIG_HOME = xdgDir
-  prevXdgData = process.env.XDG_DATA_HOME
-  xdgDataDir = mkdtempSync(join(tmpdir(), "kiro-data-test-"))
-  process.env.XDG_DATA_HOME = xdgDataDir
-})
-afterAll(() => {
-  if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME
-  else process.env.XDG_CONFIG_HOME = prevXdg
-  rmSync(xdgDir, { recursive: true, force: true })
-  if (prevXdgData === undefined) delete process.env.XDG_DATA_HOME
-  else process.env.XDG_DATA_HOME = prevXdgData
-  rmSync(xdgDataDir, { recursive: true, force: true })
+afterEach(() => {
+  vi.useRealTimers()
+  for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-const tuiJsonPath = () => join(xdgDir, "opencode", "tui.json")
+// ---------------------------------------------------------------------------
+// Task 05: Integration/Credential auth flow
+// ---------------------------------------------------------------------------
 
-/**
- * Fake PluginInput. The server module reads directory/worktree; the auth loader
- * fires the (fire-and-forget) login nudge via input.client.tui.showToast, so we
- * stub showToast here. server() startup itself touches none of this.
- */
-const makeInput = (input: { directory?: string; worktree?: string }): PluginInput =>
-  ({ ...input, client: { tui: { showToast: async () => true } } }) as unknown as PluginInput
+describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
+  test("registers integration kiro with oauth method", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
 
-type LoaderFn = NonNullable<AuthHook["loader"]>
+    const integration = makeIntegrationDraft()
+    h.integrationTransform(integration.draft)
 
-/** The loader must ignore its getAuth arg. */
-const neverAuth: Parameters<LoaderFn>[0] = async () => {
-  throw new Error("loader must not call getAuth")
-}
-
-/** Fake catalog provider; includes zero-limit and missing-limit models to prove they're filtered from the relay. */
-const fakeProvider = {
-  models: {
-    "claude-sonnet-4.5": { api: { id: "claude-sonnet-4.5" }, limit: { context: 200_000 } },
-    "claude-opus-4.6": { api: { id: "claude-opus-4.6" }, limit: { context: 1_000_000 } },
-    "deepseek-3.2": { api: { id: "deepseek-3.2" }, limit: { context: 164_000 } },
-    "zero-limit": { api: { id: "zero-limit" }, limit: { context: 0 } },
-    "missing-limit": { api: { id: "missing-limit" } },
-  },
-} as unknown as Parameters<LoaderFn>[1]
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
-
-/** Import a built module via a runtime URL so tsc never resolves dist/. */
-const importDist = (name: string): Promise<Record<string, unknown>> =>
-  import(pathToFileURL(join(ROOT, "dist", name)).href) as Promise<Record<string, unknown>>
-
-describe("server hooks", () => {
-  test("auth hook contract", async () => {
-    const hooks = await serverPlugin.server(makeInput({ directory: "/tmp/proj", worktree: "/tmp/wt" }))
-
-    // Surfaces exactly the auth, config, and provider hooks (no tool/event/etc).
-    expect(Object.keys(hooks).sort()).toEqual(["auth", "config", "provider"])
-    expect(hooks.auth?.provider).toBe("kiro")
-    expect(hooks.auth?.methods).toHaveLength(1)
-    const method = hooks.auth?.methods[0]
-    expect(method?.type).toBe("oauth")
-    expect(method?.label).toBe("Kiro CLI Login")
-    // Flow internals (browser/poll/kiro-cli) are live coverage.
-    expect(typeof method?.authorize).toBe("function")
-  })
-
-  test("auth loader returns core-parity options + relays catalog context windows", async () => {
-    // These become the options forwarded into createKiroAcp({...}).
-    const hooks = await serverPlugin.server(
-      makeInput({ directory: "/tmp/proj", worktree: "/tmp/elsewhere" }),
-    )
-
-    const options = await hooks.auth?.loader?.(neverAuth, fakeProvider)
-
-    // Four core options (directory wins over worktree) plus the relayed
-    // contextWindows keyed by api.id (zero/missing-limit filtered out).
-    expect(options).toEqual({
-      cwd: "/tmp/proj",
-      agent: "opencode",
-      trustAllTools: true,
-      mcpTimeout: 45,
-      contextWindows: {
-        "claude-sonnet-4.5": 200_000,
-        "claude-opus-4.6": 1_000_000,
-        "deepseek-3.2": 164_000,
-      },
+    expect(integration.integrations.get("kiro")).toEqual({ id: "kiro", name: "Kiro" })
+    expect(integration.methods).toHaveLength(1)
+    const registration = integration.methods[0]
+    expect(registration.integrationID).toBe("kiro")
+    expect(registration.method).toMatchObject({
+      id: "kiro-cli-login",
+      type: "oauth",
+      label: "Kiro CLI Login",
     })
-    expect(Object.keys(options ?? {}).sort()).toEqual([
-      "agent",
-      "contextWindows",
-      "cwd",
-      "mcpTimeout",
-      "trustAllTools",
-    ])
-    // Zero-limit and missing-limit models never reach the relay map.
-    const windows = (options as { contextWindows: Record<string, number> }).contextWindows
-    expect("zero-limit" in windows).toBe(false)
-    expect("missing-limit" in windows).toBe(false)
+    expect(typeof registration.authorize).toBe("function")
+    // kiro-cli owns credential storage/refresh: no refresh callback registered
+    expect(registration.refresh).toBeUndefined()
+
+    await cleanup()
   })
 
-  test("auth loader falls back to worktree", async () => {
-    const hooks = await serverPlugin.server(makeInput({ directory: undefined, worktree: "/tmp/wt" }))
+  test("cli absent fails with install guidance, no spawn, no credential", async () => {
+    mockVerifyAuth.mockReturnValue({ installed: false, authenticated: false })
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
 
-    const options = await hooks.auth?.loader?.(neverAuth, fakeProvider)
+    await expect(authorize({})).rejects.toThrow(/Install it from https:\/\/kiro\.dev\/docs\/cli\//)
+    expect(mockExecFile).not.toHaveBeenCalled()
 
-    expect(options?.cwd).toBe("/tmp/wt")
+    await cleanup()
   })
 
-  test("auth loader tolerates empty/undefined models and malformed entries (no throw)", async () => {
-    const hooks = await serverPlugin.server(makeInput({ directory: "/tmp/proj" }))
+  test("already authenticated resolves immediately with Credential.OAuth", async () => {
+    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
 
-    // An undefined provider and an empty models map both yield no windows.
-    await expect(
-      hooks.auth?.loader?.(neverAuth, undefined as unknown as Parameters<LoaderFn>[1]),
-    ).resolves.toMatchObject({ contextWindows: {} })
-    await expect(
-      hooks.auth?.loader?.(neverAuth, { models: {} } as unknown as Parameters<LoaderFn>[1]),
-    ).resolves.toMatchObject({ contextWindows: {} })
+    const authorization = await authorize({})
 
-    // A malformed entry (no api.id) is filtered out; the well-formed one survives.
-    const mixed = {
-      models: {
-        good: { api: { id: "good" }, limit: { context: 123 } },
-        "no-api": { limit: { context: 999 } },
-      },
-    } as unknown as Parameters<LoaderFn>[1]
-    const options = await hooks.auth?.loader?.(neverAuth, mixed)
-    expect((options as { contextWindows: Record<string, number> }).contextWindows).toEqual({
-      good: 123,
-    })
-  })
-})
+    expect(mockExecFile).not.toHaveBeenCalled()
+    expect(authorization.mode).toBe("auto")
+    await expect(authorization.callback).resolves.toEqual(EXPECTED_CREDENTIAL)
 
-// The config hook stubs a kiro provider entry so a stored login plus a kiro-less
-// models.dev catalog cannot crash opencode (core derefs an undefined provider).
-// It is GATED on a stored kiro credential: the crash only affects users WITH a
-// kiro login, so a non-kiro user must get no phantom provider mutation.
-describe("config hook (kiro provider stub, gated on a stored kiro credential)", () => {
-  // The gate reads $XDG_DATA_HOME/opencode/auth.json (isolated for the file).
-  // Each case writes the auth.json it needs and clears it afterward; with no
-  // auth.json present the gate is false and the hook must be a no-op.
-  const authJsonPath = () => join(xdgDataDir, "opencode", "auth.json")
-  const writeAuthJson = (body: unknown): void => {
-    mkdirSync(dirname(authJsonPath()), { recursive: true })
-    writeFileSync(authJsonPath(), JSON.stringify(body))
-  }
-  afterEach(() => rmSync(join(xdgDataDir, "opencode"), { recursive: true, force: true }))
-
-  /** Run the config hook against the given config, mutating it in place. */
-  const runConfig = async (input: Config): Promise<void> => {
-    const hooks = await serverPlugin.server(makeInput({ directory: "/tmp/proj" }))
-    await hooks.config?.(input)
-  }
-
-  test("no stored credential (no auth.json): hook is a no-op, adds no provider.kiro", async () => {
-    const input: Config = {}
-
-    await runConfig(input)
-
-    // Non-kiro user: the hook returns early, leaving provider untouched.
-    expect(input.provider).toBeUndefined()
+    await cleanup()
   })
 
-  test("auth.json without a kiro key: hook is a no-op, adds no provider.kiro", async () => {
-    writeAuthJson({ github: { type: "oauth" }, anthropic: { type: "api" } })
-    const input: Config = {}
+  test("login spawns kiro-cli and polls to success", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    let authenticated = false
+    mockVerifyAuth.mockImplementation(() => ({ installed: true, authenticated }))
+    const child = makeFakeChild()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockExecFile.mockReturnValue(child as any)
 
-    await runConfig(input)
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
 
-    expect(input.provider).toBeUndefined()
+    const authorization = await authorize({})
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
+    expect(mockExecFile).toHaveBeenCalledWith("kiro-cli", ["login"], { shell: false })
+    expect(authorization.mode).toBe("auto")
+
+    // task 05 acceptance: poll observes authenticated -> child stops,
+    // Credential.OAuth {type:"oauth", refresh:"", expires:0} resolves
+    const credential = expect(authorization.callback).resolves.toEqual(EXPECTED_CREDENTIAL)
+
+    await vi.advanceTimersByTimeAsync(2_000) // 1st poll: still unauthenticated
+    expect(child.kill).not.toHaveBeenCalled()
+
+    authenticated = true
+    await vi.advanceTimersByTimeAsync(2_000) // 2nd poll: success
+
+    await credential
+    expect(child.kill).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    await cleanup()
   })
 
-  test("stored kiro credential: creates provider and stubs kiro when provider is undefined", async () => {
-    writeAuthJson({ kiro: { type: "oauth" } })
-    const input: Config = {}
-
-    await runConfig(input)
-
-    expect(input.provider).toEqual({ kiro: {} })
-  })
-
-  test("stored kiro credential: reads opencode's default data path when XDG_DATA_HOME is unset", async () => {
-    const prevHome = process.env.HOME
-    const prevUserProfile = process.env.USERPROFILE
-    const prevXdgData = process.env.XDG_DATA_HOME
-    const home = mkdtempSync(join(tmpdir(), "kiro-home-test-"))
-
+  test("win32 uses shell for the login spawn", async () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true })
     try {
-      delete process.env.XDG_DATA_HOME
-      // The SUT reads home via os.homedir(), which honors $HOME on POSIX but
-      // %USERPROFILE% on win32 (it ignores $HOME there). Override both so the
-      // temp home takes effect on every platform.
-      process.env.HOME = home
-      process.env.USERPROFILE = home
-      const path = join(home, ".local", "share", "opencode", "auth.json")
-      mkdirSync(dirname(path), { recursive: true })
-      writeFileSync(path, JSON.stringify({ kiro: { type: "oauth" } }))
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+      mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
 
-      const input: Config = {}
-      await runConfig(input)
+      const h = makeMockContext()
+      const { cleanup, authorize } = await setupWithAuthorize(h)
 
-      expect(input.provider).toEqual({ kiro: {} })
+      const authorization = await authorize({})
+      authorization.callback.catch(() => {}) // cancelled by cleanup below
+
+      expect(mockExecFile).toHaveBeenCalledWith("kiro-cli", ["login"], { shell: true })
+
+      await cleanup()
     } finally {
-      if (prevXdgData === undefined) delete process.env.XDG_DATA_HOME
-      else process.env.XDG_DATA_HOME = prevXdgData
-      if (prevHome === undefined) delete process.env.HOME
-      else process.env.HOME = prevHome
-      if (prevUserProfile === undefined) delete process.env.USERPROFILE
-      else process.env.USERPROFILE = prevUserProfile
-      rmSync(home, { recursive: true, force: true })
+      if (originalPlatform !== undefined) Object.defineProperty(process, "platform", originalPlatform)
     }
   })
 
-  test("stored kiro credential: adds an empty kiro stub without touching other providers", async () => {
-    writeAuthJson({ kiro: { type: "oauth" } })
-    const input: Config = { provider: { openai: { name: "OpenAI" } } }
+  test("timeout kills child and carries manual kiro-cli login guidance", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
+    const child = makeFakeChild()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockExecFile.mockReturnValue(child as any)
 
-    await runConfig(input)
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
 
-    expect(input.provider?.kiro).toEqual({})
-    expect(input.provider?.openai).toEqual({ name: "OpenAI" })
+    const authorization = await authorize({})
+    const rejection = expect(authorization.callback).rejects.toThrow(/`kiro-cli login`/)
+
+    await vi.advanceTimersByTimeAsync(121_000) // > 120s poll budget
+
+    await rejection
+    expect(child.kill).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    await cleanup()
   })
 
-  test("stored kiro credential: does NOT clobber an existing kiro entry (idempotent / catalog-safe)", async () => {
-    writeAuthJson({ kiro: { type: "oauth" } })
-    const existing = { name: "Kiro", models: { foo: { name: "Foo" } } }
-    const input: Config = { provider: { kiro: existing } }
+  test("disposal mid-poll kills child, settles the attempt, clears timers", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
+    const child = makeFakeChild()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockExecFile.mockReturnValue(child as any)
 
-    await runConfig(input)
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
 
-    // Same reference, fields untouched: a real models.dev kiro entry survives.
-    expect(input.provider?.kiro).toBe(existing)
-    expect(input.provider?.kiro).toEqual({ name: "Kiro", models: { foo: { name: "Foo" } } })
+    const authorization = await authorize({})
+    const rejection = expect(authorization.callback).rejects.toThrow(/cancelled/)
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+    await cleanup()
+
+    await rejection
+    expect(child.kill).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  test("no auth.json/tui.json references anywhere in src/", () => {
+    const srcDir = join(dirname(fileURLToPath(import.meta.url)), "..", "src")
+    const files = readdirSync(srcDir, { recursive: true, encoding: "utf8" }).filter((file) =>
+      file.endsWith(".ts"),
+    )
+    expect(files.length).toBeGreaterThan(0)
+    for (const file of files) {
+      const content = readFileSync(join(srcDir, file), "utf8")
+      expect(content, `${file} must not reference auth.json/tui.json`).not.toMatch(
+        /auth\.json|tui\.json/,
+      )
+    }
   })
 })
 
-describe("provider hook (runtime catalog discovery)", () => {
-  type ModelsFn = NonNullable<ProviderHook["models"]>
-  type CatalogModel = Parameters<ModelsFn>[0]["models"][string]
-  type RuntimeModel = Awaited<ReturnType<typeof listModels>>[number]
+// ---------------------------------------------------------------------------
+// Task 06: catalog transform + discovery lifecycle
+// ---------------------------------------------------------------------------
 
-  const catalogModel = (
-    apiId: string,
-    overrides: Partial<CatalogModel> = {},
-  ): CatalogModel => ({
-    id: `catalog-${apiId}`,
-    providerID: "kiro",
-    api: { id: apiId, url: "https://catalog.invalid/v1", npm: "kiro-acp-ai-provider" },
-    name: `Catalog ${apiId}`,
-    family: "catalog-family",
-    capabilities: {
-      temperature: true,
-      reasoning: true,
-      attachment: true,
-      toolcall: true,
-      input: { text: true, audio: false, image: true, video: false, pdf: true },
-      output: { text: true, audio: false, image: false, video: false, pdf: false },
-      interleaved: { field: "reasoning_content" },
-    },
-    cost: { input: 1.25, output: 5, cache: { read: 0.1, write: 0.2 } },
-    limit: { context: 200_000, input: 190_000, output: 10_000 },
-    status: "active",
-    options: {},
-    headers: { "x-catalog-source": "models.dev" },
-    release_date: "2026-07-01",
-    ...overrides,
+describe("discovery: catalog transform + runtime model lifecycle (task 06)", () => {
+  test("successful discovery publishes exact case-sensitive intersection and reloads once", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("claude-sonnet-4.6", { name: "Sonnet" })])
+
+    const cleanup = await runSetup(h)
+    await flush()
+
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(mockListModels).toHaveBeenCalledWith({ cwd: h.directory })
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    const catalog = makeCatalogDraft()
+    seedRichKiro(catalog, [
+      { key: "sonnet", modelID: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", release: "2025" },
+      { key: "sonnet-case", modelID: "Claude-Sonnet-4.6" }, // case mismatch -> removed
+      { key: "unrelated", modelID: "other-model" }, // not in runtime -> removed
+    ])
+    h.catalogTransform(catalog.draft)
+
+    const record = catalog.providers.get("kiro")
+    expect(record).toBeDefined()
+    expect([...record!.models.keys()]).toEqual(["sonnet"])
+    // rich models.dev metadata survives the transform
+    expect(record!.models.get("sonnet")).toMatchObject({
+      modelID: "claude-sonnet-4.6",
+      name: "Claude Sonnet 4.6",
+      release: "2025",
+    })
+    expect(record!.provider).toMatchObject({
+      name: "Kiro",
+      integrationID: "kiro",
+      package: "aisdk:kiro-acp-ai-provider",
+    })
+
+    await cleanup()
   })
 
-  const runtimeModel = (
-    modelId: string,
-    runtimeEfforts: string[] = [],
-    baselineEffort?: string,
-  ): RuntimeModel => ({
-    modelId,
-    name: `Runtime ${modelId}`,
-    runtimeEfforts,
-    ...(baselineEffort === undefined ? {} : { baselineEffort }),
+  test("duplicate runtime modelId fails open: snapshot unchanged, no reload", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("dupe"), runtime("dupe")])
+
+    const cleanup = await runSetup(h)
+    await flush()
+
+    expect(h.reload).not.toHaveBeenCalled()
+
+    // no snapshot was published: the transform must leave catalog data untouched
+    const catalog = makeCatalogDraft()
+    seedRichKiro(catalog, [{ key: "existing", modelID: "existing-model" }])
+    h.catalogTransform(catalog.draft)
+    expect([...catalog.providers.get("kiro")!.models.keys()]).toEqual(["existing"])
+
+    await cleanup()
   })
 
-  const resolveRuntimeModels = (models: RuntimeModel[]): void => {
-    mockListModels.mockResolvedValue(models)
-  }
+  test("listModels exception fails open: previous snapshot retained", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("model-a")])
 
-  const modelsProvider = (
-    models: Record<string, CatalogModel>,
-  ): Parameters<ModelsFn>[0] => ({ models }) as Parameters<ModelsFn>[0]
+    const cleanup = await runSetup(h)
+    await flush()
+    expect(h.reload).toHaveBeenCalledTimes(1)
 
-  const authedCtx = { auth: { type: "oauth" } } as unknown as Parameters<ModelsFn>[1]
+    mockListModels.mockRejectedValue(new Error("acp transport down"))
+    h.events.push(kiroEvent())
+    await flush()
 
-  const runModels = async (
-    provider: Parameters<ModelsFn>[0],
-    input: PluginInput = makeInput({ directory: "/tmp/proj" }),
-  ) => {
-    const hooks = await serverPlugin.server(input)
-    return hooks.provider?.models?.(provider, authedCtx)
-  }
+    // failed rediscovery: no reload of partial data, last known-good survives
+    expect(h.reload).toHaveBeenCalledTimes(1)
+    const catalog = makeCatalogDraft()
+    seedRichKiro(catalog, [{ key: "a", modelID: "model-a" }])
+    h.catalogTransform(catalog.draft)
+    expect([...catalog.providers.get("kiro")!.models.keys()]).toEqual(["a"])
 
-  test("unauthenticated calls preserve the catalog without discovery", async () => {
-    const provider = modelsProvider({ preserved: catalogModel("preserved") })
-    const hooks = await serverPlugin.server(makeInput({ directory: "/tmp/proj" }))
+    await cleanup()
+  })
 
-    const models = await hooks.provider?.models?.(provider, {})
-
-    expect(models).toBe(provider.models)
+  test("login event rechecks connection.active and rediscovers", async () => {
+    const h = makeMockContext()
+    // not connected at setup: no initial discovery
+    const cleanup = await runSetup(h)
+    await flush()
     expect(mockListModels).not.toHaveBeenCalled()
+    const activeCallsAtSetup = h.active.mock.calls.length
+
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("model-a")])
+    h.events.push(kiroEvent())
+    await flush()
+
+    expect(h.active.mock.calls.length).toBeGreaterThan(activeCallsAtSetup)
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    await cleanup()
   })
 
-  test("authenticated calls discover once with the plugin cwd", async () => {
-    const provider = modelsProvider({ catalog: catalogModel("catalog-only") })
-    const hooks = await serverPlugin.server(
-      makeInput({ directory: "/tmp/project", worktree: "/tmp/worktree" }),
+  test("non-kiro connection events are ignored", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+    await flush()
+    const activeCallsAtSetup = h.active.mock.calls.length
+
+    h.events.push({ type: "integration.connection.updated", data: { integrationID: "other" } })
+    h.events.push({ type: "session.updated", data: { integrationID: "kiro" } })
+    await flush()
+
+    expect(h.active.mock.calls.length).toBe(activeCallsAtSetup)
+    expect(mockListModels).not.toHaveBeenCalled()
+    expect(h.reload).not.toHaveBeenCalled()
+
+    await cleanup()
+  })
+
+  test("logout clears the snapshot and reloads without runtime-only models", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("model-a")])
+    const cleanup = await runSetup(h)
+    await flush()
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    h.active.mockResolvedValue(undefined) // logged out
+    h.events.push(kiroEvent())
+    await flush()
+
+    expect(h.reload).toHaveBeenCalledTimes(2)
+    // fallback-shaped draft (no models.dev entry): nothing self-registers now
+    const catalog = makeCatalogDraft()
+    h.catalogTransform(catalog.draft)
+    expect(catalog.providers.size).toBe(0)
+
+    await cleanup()
+  })
+
+  test("stale discovery completing after logout is discarded by the generation guard", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    let resolveModels!: (models: ModelWithEfforts[]) => void
+    mockListModels.mockImplementation(
+      () => new Promise<ModelWithEfforts[]>((resolve) => (resolveModels = resolve)),
     )
 
-    await hooks.provider?.models?.(provider, authedCtx)
+    const cleanup = await runSetup(h)
+    await flush() // initial discovery in flight
 
-    expect(mockListModels).toHaveBeenCalledOnce()
-    expect(mockListModels).toHaveBeenCalledWith({ cwd: "/tmp/project" })
+    h.active.mockResolvedValue(undefined)
+    h.events.push(kiroEvent()) // logout bumps the generation + reloads
+    await flush()
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    resolveModels([runtime("stale-model")])
+    await flush()
+
+    // stale completion dropped: no republish, snapshot stays empty
+    expect(h.reload).toHaveBeenCalledTimes(1)
+    const catalog = makeCatalogDraft()
+    h.catalogTransform(catalog.draft)
+    expect(catalog.providers.size).toBe(0)
+
+    await cleanup()
   })
 
-  test("uses the exact case-sensitive intersection and omits unmatched IDs", async () => {
-    const exact = catalogModel("Model-ID")
-    const provider = modelsProvider({ exact, "catalog-only": catalogModel("catalog-only") })
-    resolveRuntimeModels([
-      runtimeModel("Model-ID"),
-      runtimeModel("model-id"),
-      runtimeModel("runtime-only"),
-    ])
-
-    const models = await runModels(provider)
-
-    expect(models).toEqual({ exact })
-    expect(models).not.toHaveProperty("catalog-only")
-    expect(models).not.toHaveProperty("runtime-only")
-  })
-
-  test("preserves the catalog key and metadata while enriching the exact match", async () => {
-    const catalog = catalogModel("metadata-model", {
-      id: "normalized-catalog-id",
-      name: "Authoritative Catalog Name",
-      options: { temperature: 0.25, catalogOption: "preserved" },
-      variants: {
-        existing: { reasoningEffort: "existing", temperature: 0.5 },
-        "opaque/default": { reasoningEffort: "stale", temperature: 0.9 },
-      },
-    })
-    const provider = modelsProvider({ "preserved-catalog-key": catalog })
-    resolveRuntimeModels([
-      runtimeModel(
-        "metadata-model",
-        ["opaque/default", "MAX_V2"],
-        "opaque/default",
-      ),
-    ])
-
-    const models = await runModels(provider)
-    const model = models?.["preserved-catalog-key"]
-
-    expect(Object.keys(models ?? {})).toEqual(["preserved-catalog-key"])
-    expect(model).toEqual({
-      ...catalog,
-      options: {
-        temperature: 0.25,
-        catalogOption: "preserved",
-        reasoningEffort: "opaque/default",
-      },
-      variants: {
-        existing: { reasoningEffort: "existing", temperature: 0.5 },
-        "opaque/default": { reasoningEffort: "opaque/default", temperature: 0.9 },
-        MAX_V2: { reasoningEffort: "MAX_V2" },
-      },
-    })
-    expect(model?.api).toBe(catalog.api)
-    expect(model?.capabilities).toBe(catalog.capabilities)
-    expect(model?.cost).toBe(catalog.cost)
-    expect(model?.limit).toBe(catalog.limit)
-    expect(model?.name).toBe("Authoritative Catalog Name")
-  })
-
-  test("keeps opaque runtime efforts exact without synthesizing a baseline", async () => {
-    resolveRuntimeModels([runtimeModel("effort-model", ["Future/Balanced.v2", "MAX_V2"])])
-
-    const model = (await runModels(
-      modelsProvider({ effort: catalogModel("effort-model") }),
-    ))?.effort
-
-    expect(model?.variants).toEqual({
-      "Future/Balanced.v2": { reasoningEffort: "Future/Balanced.v2" },
-      MAX_V2: { reasoningEffort: "MAX_V2" },
-    })
-    expect(model?.options.reasoningEffort).toBeUndefined()
-  })
-
-  test("treats empty runtime efforts as authoritative", async () => {
-    const catalog = catalogModel("no-runtime-effort-model", {
-      options: { temperature: 0.7 },
-      variants: { existing: { reasoningEffort: "existing", temperature: 0.5 } },
-    })
-    resolveRuntimeModels([runtimeModel("no-runtime-effort-model")])
-
-    const model = (await runModels(modelsProvider({ matched: catalog })))?.matched
-
-    expect(model).toBe(catalog)
-  })
-
-  test("fails open to the exact original catalog for duplicate runtime IDs", async () => {
-    const catalog = catalogModel("preserved", {
-      options: { catalogOption: "preserved" },
-      variants: { existing: { reasoningEffort: "existing" } },
-    })
-    const provider = modelsProvider({ preserved: catalog })
-    resolveRuntimeModels([runtimeModel("duplicate"), runtimeModel("duplicate")])
-
-    const models = await runModels(provider)
-
-    expect(models).toBe(provider.models)
-    expect(models?.preserved).toBe(catalog)
-  })
-
-  test("fails open to the exact original catalog when discovery throws", async () => {
-    const catalog = catalogModel("preserved")
-    const provider = modelsProvider({ preserved: catalog })
-    mockListModels.mockRejectedValue(new Error("discovery failed"))
-
-    const models = await runModels(provider)
-
-    expect(models).toBe(provider.models)
-    expect(models?.preserved).toBe(catalog)
-  })
-})
-
-describe("sidebar consent prompt (static, no startup tui.json read)", () => {
-  // Consent moved into the login flow: the prompt is a STATIC array and server()
-  // no longer probes tui.json at startup. Each case still cleans the isolated
-  // tui.json to prove startup behavior is independent of its content.
-  afterEach(() => rmSync(join(xdgDir, "opencode"), { recursive: true, force: true }))
-
-  const sidebarPrompt = (hook: AuthHook | undefined) =>
-    hook?.methods[0]?.prompts?.find((p) => p.key === "sidebar")
-
-  test("always exposes the static sidebar consent select", async () => {
-    const hooks = await serverPlugin.server(makeInput({ directory: "/tmp/proj" }))
-
-    expect(hooks.auth?.methods[0]?.prompts).toHaveLength(1)
-    const prompt = sidebarPrompt(hooks.auth)
-    expect(prompt?.type).toBe("select")
-    expect(prompt?.message).toBe("Enable the Kiro credits sidebar?")
-    expect(prompt && "options" in prompt ? prompt.options.map((o) => o.value) : []).toEqual([
-      "yes",
-      "no",
-    ])
-  })
-
-  test("performs no startup tui.json read: SAME static prompt even when tui.json lists opencode-kiro", async () => {
-    // Precise regression guard for "no startup tui.json read". The OLD code read
-    // tui.json at startup and, when opencode-kiro was already in `plugin`,
-    // suppressed the prompt (empty array, "don't ask twice"). With THIS exact
-    // input, an invariant single-item prompt proves startup no longer reads or
-    // gates on tui.json; the prompt is now fully static.
-    mkdirSync(dirname(tuiJsonPath()), { recursive: true })
-    writeFileSync(tuiJsonPath(), JSON.stringify({ theme: "kanagawa", plugin: ["opencode-kiro"] }))
-
-    const hooks = await serverPlugin.server(makeInput({ directory: "/tmp/proj" }))
-
-    expect(hooks.auth?.methods[0]?.prompts).toHaveLength(1)
-    expect(sidebarPrompt(hooks.auth)?.message).toBe("Enable the Kiro credits sidebar?")
-  })
-})
-
-describe("enableSidebarConfig writer (tui.json)", () => {
-  // Each case drives the isolated tui.json the writer reads/writes.
-  afterEach(() => rmSync(join(xdgDir, "opencode"), { recursive: true, force: true }))
-
-  const readTui = (): Record<string, unknown> =>
-    JSON.parse(readFileSync(tuiJsonPath(), "utf8")) as Record<string, unknown>
-
-  test("adds opencode-kiro to plugin and writes NO plugin_enabled disable", async () => {
-    // No file yet: the writer creates one carrying just the plugin entry.
-    await enableSidebarConfig(tuiJsonPath(), makeInput({ directory: "/tmp/proj" }))
-
-    const config = readTui()
-    expect(config.plugin).toEqual(["opencode-kiro"])
-    // The append model never disables the builtin context box.
-    expect("plugin_enabled" in config).toBe(false)
-  })
-
-  test("appends opencode-kiro to an existing plugin array and preserves other keys", async () => {
-    // Not configured yet (opencode-kiro absent): the writer adds it without
-    // dropping the existing plugin or unrelated keys, and writes no disable.
-    mkdirSync(dirname(tuiJsonPath()), { recursive: true })
-    writeFileSync(tuiJsonPath(), JSON.stringify({ theme: "kanagawa", plugin: ["other-plugin"] }))
-
-    await enableSidebarConfig(tuiJsonPath(), makeInput({ directory: "/tmp/proj" }))
-
-    const config = readTui()
-    expect(config.plugin).toEqual(["other-plugin", "opencode-kiro"])
-    expect(config.theme).toBe("kanagawa")
-    expect("plugin_enabled" in config).toBe(false)
-  })
-
-  test("is idempotent: an already-configured file is left untouched (no duplicate plugin)", async () => {
-    mkdirSync(dirname(tuiJsonPath()), { recursive: true })
-    writeFileSync(tuiJsonPath(), JSON.stringify({ plugin: ["opencode-kiro"] }))
-
-    await enableSidebarConfig(tuiJsonPath(), makeInput({ directory: "/tmp/proj" }))
-
-    const config = readTui()
-    expect(config.plugin).toEqual(["opencode-kiro"])
-    expect("plugin_enabled" in config).toBe(false)
-  })
-
-  test("leaves an existing unrelated plugin_enabled exactly as-is", async () => {
-    // The plugin no longer manages plugin_enabled: a pre-existing entry (set by
-    // the user for unrelated reasons) is preserved untouched while opencode-kiro
-    // is added to `plugin`.
-    mkdirSync(dirname(tuiJsonPath()), { recursive: true })
-    writeFileSync(
-      tuiJsonPath(),
-      JSON.stringify({
-        plugin: ["other-plugin"],
-        plugin_enabled: { "internal:other": true },
-      }),
+  test("concurrent discovery triggers coalesce onto one listModels call", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    let resolveModels!: (models: ModelWithEfforts[]) => void
+    mockListModels.mockImplementation(
+      () => new Promise<ModelWithEfforts[]>((resolve) => (resolveModels = resolve)),
     )
 
-    await enableSidebarConfig(tuiJsonPath(), makeInput({ directory: "/tmp/proj" }))
+    const cleanup = await runSetup(h)
+    await flush() // setup discovery in flight
 
-    const config = readTui()
-    expect(config.plugin).toEqual(["other-plugin", "opencode-kiro"])
-    // The unrelated toggle is left exactly as written; nothing is deleted.
-    expect(config.plugin_enabled).toEqual({ "internal:other": true })
+    // second trigger while the setup discovery is still in flight
+    h.events.push(kiroEvent())
+    await flush()
+
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+
+    resolveModels([runtime("model-a")])
+    await flush()
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    await cleanup()
   })
 
-  test("does not clobber an existing but unparseable tui.json", async () => {
-    mkdirSync(dirname(tuiJsonPath()), { recursive: true })
-    writeFileSync(tuiJsonPath(), "{ not valid json")
+  test("effort variants match v1 merge semantics; empty efforts invent nothing", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([
+      runtime("with-efforts", { runtimeEfforts: ["low", "high"], baselineEffort: "low" }),
+      runtime("no-efforts", { runtimeEfforts: [] }),
+    ])
+    const cleanup = await runSetup(h)
+    await flush()
 
-    await enableSidebarConfig(tuiJsonPath(), makeInput({ directory: "/tmp/proj" }))
+    const catalog = makeCatalogDraft()
+    seedRichKiro(catalog, [
+      { key: "with-efforts", modelID: "with-efforts" },
+      { key: "no-efforts", modelID: "no-efforts" },
+    ])
+    h.catalogTransform(catalog.draft)
 
-    // A parse failure must never overwrite the user's file.
-    expect(readFileSync(tuiJsonPath(), "utf8")).toBe("{ not valid json")
-  })
-})
+    const models = catalog.providers.get("kiro")!.models
+    // B3 fix lock: the emitted settings key is the SDK's `effort`
+    // (KiroACPProviderSettings, dist/index.d.ts) — never `reasoningEffort`
+    expect(models.get("with-efforts")!.settings.effort).toBe("low")
+    expect(models.get("with-efforts")!.settings.reasoningEffort).toBeUndefined()
+    expect(models.get("with-efforts")!.variants).toEqual([
+      { id: "low", settings: { effort: "low" } },
+      { id: "high", settings: { effort: "high" } },
+    ])
+    expect(models.get("no-efforts")!.variants).toEqual([])
+    expect(models.get("no-efforts")!.settings.effort).toBeUndefined()
 
-// Regression: the bug was that tui.json often was NOT written on the FIRST
-// /connect. The sidebar write used to live in onSuccess(), reached only after a
-// successful login; on a first connect the not-authed poll branch could time out
-// before writing. The fix moves the write to fire on CONSENT, the instant
-// authorize() runs, independent of the auth branch and the 120s poll.
-describe("authorize sidebar consent write (decoupled from auth success)", () => {
-  afterEach(() => rmSync(join(xdgDir, "opencode"), { recursive: true, force: true }))
-
-  const authorizeWith = async (inputs: Record<string, string>) => {
-    const hooks = await serverPlugin.server(makeInput({ directory: "/tmp/proj" }))
-    return hooks.auth?.methods[0]?.authorize?.(inputs)
-  }
-
-  test("writes tui.json on consent=yes even when NOT authenticated (poll branch, login not done)", async () => {
-    // First-connect condition: installed but NOT logged in, so authorize takes
-    // the login+poll branch. The write must already be on disk regardless of the
-    // poll, proving it no longer depends on a successful login.
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
-
-    await authorizeWith({ sidebar: "yes" })
-
-    const config = JSON.parse(readFileSync(tuiJsonPath(), "utf8")) as Record<string, unknown>
-    expect(config.plugin).toEqual(["opencode-kiro"])
+    await cleanup()
   })
 
-  test("does NOT write tui.json when consent is not yes (no opt-in, not authenticated)", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
+  test("fallback self-registers only runtime models when the catalog lacks Kiro", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([
+      runtime("model-a", { name: "Model A" }),
+      runtime("model-b", { name: "" }),
+    ])
+    const cleanup = await runSetup(h)
+    await flush()
 
-    await authorizeWith({ sidebar: "no" })
+    const catalog = makeCatalogDraft() // no models.dev Kiro entry
+    h.catalogTransform(catalog.draft)
 
-    expect(existsSync(tuiJsonPath())).toBe(false)
+    const record = catalog.providers.get("kiro")
+    expect(record).toBeDefined()
+    expect([...record!.models.keys()].sort()).toEqual(["model-a", "model-b"])
+    expect(record!.models.get("model-a")).toMatchObject({ name: "Model A", modelID: "model-a" })
+    expect(record!.models.get("model-b")!.name).toBe("model-b") // falls back to the id
+    expect(record!.provider.package).toBe("aisdk:kiro-acp-ai-provider")
+    expect(record!.provider.name).toBe("Kiro")
+
+    await cleanup()
   })
-})
 
-describe("dist/server.js module isolation", () => {
-  test("server module exports no tui", async () => {
-    // Namespace-level isolation (scaffold.test.ts already covers the DEFAULT
-    // export shape): no `tui` anywhere in the module namespace.
-    const mod = await importDist("server.js")
+  test("provider settings contextWindows are keyed by API modelID with positive values only", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("claude-sonnet-4.6"), runtime("zero-limit")])
+    const cleanup = await runSetup(h)
+    await flush()
 
-    expect("tui" in mod).toBe(false)
-  })
+    const catalog = makeCatalogDraft()
+    seedRichKiro(catalog, [
+      // catalog key differs from the API modelID on purpose
+      { key: "sonnet-alias", modelID: "claude-sonnet-4.6", limit: { context: 200_000, output: 64_000 } },
+      { key: "zero-alias", modelID: "zero-limit", limit: { context: 0, output: 0 } },
+    ])
+    h.catalogTransform(catalog.draft)
 
-  test("named KiroAuthPlugin is the same function as the default server", async () => {
-    // Bundling export: must be a function and the SAME reference as the
-    // default's `server`, so the two can't drift.
-    const mod = await importDist("server.js")
-    const def = mod.default as { server: unknown }
-
-    expect(typeof mod.KiroAuthPlugin).toBe("function")
-    expect(mod.KiroAuthPlugin).toBe(def.server)
-  })
-})
-
-// Token-file helpers shared by the readToken + startup-nudge suites. Each writes
-// an isolated temp kiro-auth-token.json so tests never touch the real
-// ~/.aws/sso/cache file (and never spawn kiro-cli).
-const tokenDirs: string[] = []
-afterEach(() => {
-  while (tokenDirs.length) rmSync(tokenDirs.pop() as string, { recursive: true, force: true })
-})
-
-/** Write a token file (JSON body or raw string) and return its path. */
-const writeTokenFile = (content: unknown): string => {
-  const dir = mkdtempSync(join(tmpdir(), "kiro-token-"))
-  tokenDirs.push(dir)
-  const path = join(dir, "kiro-auth-token.json")
-  writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content))
-  return path
-}
-
-/** ISO timestamp offset from now (positive = future, negative = past). */
-const isoFromNow = (offsetMs: number): string => new Date(Date.now() + offsetMs).toISOString()
-
-/** A missing path that definitely does not exist. */
-const missingTokenPath = (): string => join(tmpdir(), "kiro-missing-does-not-exist-xyz.json")
-
-describe("readToken (whoami-gated)", () => {
-  // THE CORE BUG (0.1.2 regression we are fixing): a logged-in user whose cached
-  // on-disk token file is STALE (expiresAt in the PAST) was wrongly refused. Now
-  // whoami (verifyAuth().authenticated) is the gate, so the stale file still
-  // yields success, a FUTURE expires, and the file's REAL refresh token.
-  test("logged-in user with a STALE file still returns success (core regression)", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
-    const before = Date.now()
-    const path = writeTokenFile({
-      accessToken: "access-abc",
-      refreshToken: "refresh-xyz",
-      expiresAt: isoFromNow(-3_600_000), // 1h in the PAST: stale on disk
+    const settings = catalog.providers.get("kiro")!.provider.settings
+    expect(settings.contextWindows).toEqual({ "claude-sonnet-4.6": 200_000 })
+    expect(settings).toMatchObject({
+      cwd: h.directory,
+      agent: "opencode",
+      trustAllTools: true,
+      mcpTimeout: 45,
     })
 
-    const result = await readToken(path)
-
-    expect(result.type).toBe("success")
-    if (result.type !== "success") throw new Error("expected success")
-    // Carries the file's REAL refresh token despite the past file expiry.
-    expect(result.refresh).toBe("refresh-xyz")
-    expect(result.access).toBe("access-abc")
-    // expires is a FUTURE value (Date.now()+8h), NOT the file's past expiresAt.
-    expect(result.expires).toBeGreaterThan(before)
-    expect(result.expires).toBeGreaterThan(Date.now())
-  })
-
-  test("logged-in user with a future-expiry file carries its real refresh", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
-    const path = writeTokenFile({
-      accessToken: "access-abc",
-      refreshToken: "refresh-xyz",
-      expiresAt: isoFromNow(3_600_000),
-    })
-
-    const result = await readToken(path)
-
-    expect(result.type).toBe("success")
-    if (result.type !== "success") throw new Error("expected success")
-    expect(result.refresh).toBe("refresh-xyz")
-    expect(result.access).toBe("access-abc")
-    expect(result.expires).toBeGreaterThan(Date.now())
-  })
-
-  test("logged-in user with NO token file still returns success (file is optional)", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
-
-    const result = await readToken(undefined)
-
-    expect(result.type).toBe("success")
-    if (result.type !== "success") throw new Error("expected success")
-    expect(result.refresh).toBe("")
-    expect(result.access).toBe("authenticated")
-    expect(result.expires).toBeGreaterThan(Date.now())
-  })
-
-  test("logged-in user with a missing file path still returns success", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
-
-    const result = await readToken(missingTokenPath())
-
-    expect(result.type).toBe("success")
-    if (result.type !== "success") throw new Error("expected success")
-    expect(result.refresh).toBe("")
-    expect(result.access).toBe("authenticated")
-  })
-
-  test("logged-in user with an invalid-JSON file still returns success (file ignored)", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
-    const path = writeTokenFile("{ not valid json")
-
-    const result = await readToken(path)
-
-    expect(result.type).toBe("success")
-    if (result.type !== "success") throw new Error("expected success")
-    expect(result.refresh).toBe("")
-    expect(result.access).toBe("authenticated")
-  })
-
-  test("NOT logged in returns failed even with a valid file present (no record)", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
-    const path = writeTokenFile({
-      accessToken: "access-abc",
-      refreshToken: "refresh-xyz",
-      expiresAt: isoFromNow(3_600_000),
-    })
-
-    expect(await readToken(path)).toEqual({ type: "failed" })
-  })
-
-  test("NOT logged in with no token file returns failed", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
-
-    expect(await readToken(undefined)).toEqual({ type: "failed" })
+    await cleanup()
   })
 })
 
-describe("startup login nudge (notifyIfTokenExpired)", () => {
-  afterEach(() => vi.restoreAllMocks())
+// ---------------------------------------------------------------------------
+// Task 07: AISDK hook ownership + aggregated idempotent cleanup
+// ---------------------------------------------------------------------------
 
-  /** Fake client whose showToast records its calls. */
-  const makeToastClient = () => {
-    const showToast = vi.fn(
-      async (_opts: { body: { message: string; variant: string } }) => true,
+describe("aisdk hook + lifecycle (task 07)", () => {
+  test("hook overwrites a pre-populated event.sdk with the owned instance", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+    expect(h.getSdkHookName()).toBe("sdk")
+
+    const unowned = { languageModel: vi.fn() } // DynamicProviderPlugin residue
+    const event = {
+      model: { modelID: "claude-sonnet-4.6" },
+      package: "kiro-acp-ai-provider",
+      options: { cwd: h.directory, agent: "opencode" },
+      sdk: unowned as unknown,
+    }
+    await h.sdkHook(event)
+
+    expect(mockCreateKiroAcp).toHaveBeenCalledTimes(1)
+    expect(mockCreateKiroAcp).toHaveBeenCalledWith(event.options)
+    expect(event.sdk).toBe(sdkInstances[0])
+    expect(event.sdk).not.toBe(unowned)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(typeof (event.sdk as any).languageModel).toBe("function")
+
+    await cleanup()
+  })
+
+  test("non-kiro packages are left alone", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    const foreign = { languageModel: vi.fn() }
+    const event = { model: {}, package: "some-other-provider", options: {}, sdk: foreign as unknown }
+    await h.sdkHook(event)
+
+    expect(mockCreateKiroAcp).not.toHaveBeenCalled()
+    expect(event.sdk).toBe(foreign)
+
+    await cleanup()
+  })
+
+  test("owned instances are reused per options key and shut down exactly once on cleanup", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    const eventA1 = { model: {}, package: "kiro-acp-ai-provider", options: { cwd: "/a" }, sdk: undefined as unknown }
+    const eventA2 = { model: {}, package: "kiro-acp-ai-provider", options: { cwd: "/a" }, sdk: undefined as unknown }
+    const eventB = { model: {}, package: "kiro-acp-ai-provider", options: { cwd: "/b" }, sdk: undefined as unknown }
+    await h.sdkHook(eventA1)
+    await h.sdkHook(eventA2)
+    await h.sdkHook(eventB)
+
+    // stable-options reuse: same options -> same owned instance
+    expect(eventA2.sdk).toBe(eventA1.sdk)
+    expect(eventB.sdk).not.toBe(eventA1.sdk)
+    expect(sdkInstances).toHaveLength(2)
+
+    await cleanup()
+    for (const instance of sdkInstances) expect(instance.shutdown).toHaveBeenCalledTimes(1)
+
+    await cleanup() // second cleanup must not shut anything down again
+    for (const instance of sdkInstances) expect(instance.shutdown).toHaveBeenCalledTimes(1)
+  })
+
+  test("cleanup is idempotent and complete across auth, discovery and aisdk", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
+
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
+
+    // put a login poll in flight so cleanup has timers + a child to release
+    const authorization = await authorize({})
+    authorization.callback.catch(() => {}) // settled by disposal
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+    const first = cleanup()
+    const second = cleanup()
+    await Promise.all([first, second])
+
+    expect(h.disposeSpies.integration).toHaveBeenCalledTimes(1)
+    expect(h.disposeSpies.catalog).toHaveBeenCalledTimes(1)
+    expect(h.disposeSpies.hook).toHaveBeenCalledTimes(1)
+    expect(h.events.returned).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    // a later third call is equally safe and disposes nothing again
+    await cleanup()
+    expect(h.disposeSpies.integration).toHaveBeenCalledTimes(1)
+    expect(h.disposeSpies.hook).toHaveBeenCalledTimes(1)
+  })
+
+  test("a failing disposer does not block the others; failures aggregate", async () => {
+    const h = makeMockContext()
+    const hookError = new Error("hook dispose exploded")
+    h.disposeSpies.hook.mockRejectedValue(hookError)
+
+    const cleanup = await runSetup(h)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const failure: any = await (async () => cleanup())().then(
+      () => undefined,
+      (error: unknown) => error,
     )
-    const client = { tui: { showToast } } as unknown as PluginInput["client"]
-    return { client, showToast }
-  }
 
-  /** Fake client whose showToast always rejects. */
-  const makeThrowingClient = () =>
-    ({
-      tui: {
-        showToast: async () => {
-          throw new Error("toast boom")
-        },
-      },
-    }) as unknown as PluginInput["client"]
-
-  test("is SILENT for a logged-in user (no false-fire on every startup)", async () => {
-    // whoami reports logged in (the common case: kiro-cli auto-re-auths).
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    const { client, showToast } = makeToastClient()
-
-    await notifyIfTokenExpired(client)
-
-    expect(showToast).not.toHaveBeenCalled()
-    expect(warn).not.toHaveBeenCalled()
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect(failure.errors).toContain(hookError)
+    // every other resource was still disposed
+    expect(h.disposeSpies.catalog).toHaveBeenCalledTimes(1)
+    expect(h.disposeSpies.integration).toHaveBeenCalledTimes(1)
+    expect(h.events.returned).toHaveBeenCalledTimes(1)
   })
 
-  test("fires a warning toast naming kiro-cli login when NOT logged in", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    const { client, showToast } = makeToastClient()
+  test("setup failure runs partial cleanup over earlier registrations and rethrows", async () => {
+    const h = makeMockContext()
+    const bootError = new Error("catalog transform registration failed")
+    h.raw.catalog.transform.mockRejectedValue(bootError)
 
-    await notifyIfTokenExpired(client)
+    await expect(serverPlugin.setup(h.context)).rejects.toBe(bootError)
 
-    expect(warn).toHaveBeenCalledTimes(1)
-    expect(showToast).toHaveBeenCalledTimes(1)
-    const arg = showToast.mock.calls[0][0]
-    expect(arg.body.variant).toBe("warning")
-    expect(arg.body.message).toContain("kiro-cli login")
+    // auth registered before the discovery failure -> its disposer ran
+    expect(h.disposeSpies.integration).toHaveBeenCalledTimes(1)
+    expect(h.disposeSpies.hook).not.toHaveBeenCalled()
   })
 
-  test("logs the fallback nudge when not logged in and no client/TUI is available", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-
-    await expect(notifyIfTokenExpired(undefined)).resolves.toBeUndefined()
-    expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0][0]).toContain("kiro-cli login")
-  })
-
-  test("never throws when verifyAuth itself throws (gate fails closed, no nudge)", async () => {
-    mockVerifyAuth.mockImplementation(() => {
-      throw new Error("whoami boom")
-    })
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-
-    await expect(notifyIfTokenExpired(makeThrowingClient())).resolves.toBeUndefined()
-    // The gate threw before the log line; no nudge is emitted, but never throws.
-    expect(warn).not.toHaveBeenCalled()
-  })
-
-  test("never throws when NOT logged in AND showToast throws (log-first still fires)", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-
-    await expect(notifyIfTokenExpired(makeThrowingClient())).resolves.toBeUndefined()
-    // Toast rejected -> the log line still surfaced first.
-    expect(warn).toHaveBeenCalledTimes(1)
-  })
-
-  // FINDING F1 regression: a HEADLESS (non-TUI) run has no toast receiver, so
-  // showToast's promise NEVER settles. The old code AWAITED it, hanging startup
-  // forever (it hangs rather than throws, so the try/catch + .catch() never ran).
-  // This stub reproduces that exact condition; the fix logs FIRST and fires the
-  // toast WITHOUT awaiting, so the call must still resolve promptly. The other
-  // tests only mock showToast to RESOLVE or THROW, so they never caught the hang.
-  test("F1: resolves promptly without awaiting a never-settling showToast (headless hang)", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    // The precise F1 trigger: a toast promise that NEVER settles.
-    const showToast = vi.fn(() => new Promise<never>(() => {}))
-    const client = { tui: { showToast } } as unknown as PluginInput["client"]
-
-    // Race the call against a short timeout. If notifyIfTokenExpired AWAITED the
-    // never-settling toast it would lose this race (and hang the suite); winning
-    // it promptly proves the toast is fire-and-forget.
-    const start = Date.now()
-    const timeout = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 1000))
-    const outcome = await Promise.race([
-      notifyIfTokenExpired(client).then(() => "resolved" as const),
-      timeout,
+  // B3 regression lock (HOST_E2E_REPORT.md): end-to-end witness for the one
+  // effort mechanism that actually works at the pinned host SHA — variant
+  // settings -> host `withVariant` overlay -> `aisdk` hook `event.options` ->
+  // `createKiroAcp({ effort })`. The host builds per-call `providerOptions`
+  // only for `@ai-sdk/*` families, so the SDK factory setting is the sole
+  // carrier and the key must be the SDK's `effort`, never `reasoningEffort`.
+  test("the SDK effort key flows from the effort variant into createKiroAcp options", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([
+      runtime("with-efforts", { runtimeEfforts: ["high"], baselineEffort: undefined }),
     ])
+    const cleanup = await runSetup(h)
+    await flush()
 
-    expect(outcome).toBe("resolved")
-    expect(Date.now() - start).toBeLessThan(1000)
-    // Toast was still invoked (fire-and-forget), just never awaited.
-    expect(showToast).toHaveBeenCalledTimes(1)
-    // LOG FIRST: the nudge line surfaced synchronously despite the dead toast.
-    expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0][0]).toContain("kiro-cli login")
-  })
+    const catalog = makeCatalogDraft()
+    seedRichKiro(catalog, [{ key: "with-efforts", modelID: "with-efforts" }])
+    h.catalogTransform(catalog.draft)
 
-  // The nudge moved OUT of server() startup and INTO the auth loader, which core
-  // only calls for users WITH a stored kiro credential. server() startup must
-  // therefore be fully silent: it must not consult whoami (verifyAuth) or log,
-  // even when the user is logged out. This is the core "no side effects for a
-  // non-kiro user at startup" guarantee.
-  test("server() startup runs no login nudge (no whoami, no warn)", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    const { client } = makeToastClient()
+    const record = catalog.providers.get("kiro")!
+    const variant = record.models.get("with-efforts")!.variants[0]
+    expect(variant).toEqual({ id: "high", settings: { effort: "high" } })
 
-    await serverPlugin.server({ directory: "/tmp/proj", client } as unknown as PluginInput)
+    // simulate the host resolving the effort variant: provider settings
+    // overlaid with the variant settings become the sdk event options
+    const options = { ...record.provider.settings, ...variant.settings }
+    const event = { model: { modelID: "with-efforts" }, package: "kiro-acp-ai-provider", options, sdk: undefined as unknown }
+    await h.sdkHook(event)
 
-    expect(mockVerifyAuth).not.toHaveBeenCalled()
-    expect(warn).not.toHaveBeenCalled()
-  })
+    expect(mockCreateKiroAcp).toHaveBeenCalledWith(
+      expect.objectContaining({ effort: "high", cwd: h.directory }),
+    )
+    expect(mockCreateKiroAcp).not.toHaveBeenCalledWith(
+      expect.objectContaining({ reasoningEffort: expect.anything() }),
+    )
+    // the owned provider serves the model the request path resolves
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((event.sdk as any).languageModel("with-efforts")).toBeDefined()
 
-  // The nudge now lives in the auth loader as fire-and-forget. Invoking the
-  // loader triggers it WITHOUT awaiting: even a never-settling toast (the F1
-  // headless-hang condition) cannot block the loader's return, yet the warn line
-  // still surfaces. Guards against re-introducing an awaited UI call on the auth
-  // path and proves the nudge is wired into the loader.
-  test("F1: auth loader fires the nudge fire-and-forget and returns promptly despite a dead toast", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    const showToast = vi.fn(() => new Promise<never>(() => {}))
-    const input = {
-      directory: "/tmp/proj",
-      client: { tui: { showToast } },
-    } as unknown as PluginInput
-
-    const hooks = await serverPlugin.server(input)
-
-    const start = Date.now()
-    const timeout = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 1000))
-    const outcome = await Promise.race([
-      hooks.auth?.loader?.(neverAuth, fakeProvider).then(() => "resolved" as const),
-      timeout,
-    ])
-
-    expect(outcome).toBe("resolved")
-    expect(Date.now() - start).toBeLessThan(1000)
-
-    // Let the fire-and-forget nudge settle, then assert it actually ran.
-    await new Promise((r) => setTimeout(r, 50))
-    expect(showToast).toHaveBeenCalledTimes(1)
-    expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0][0]).toContain("kiro-cli login")
+    await cleanup()
   })
 })
