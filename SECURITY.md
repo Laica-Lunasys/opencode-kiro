@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-Only the latest published version on npm receives security fixes. At time of writing that is `opencode-kiro@0.3.6`. Please upgrade before reporting.
+Only the latest published version of each active line on npm receives security fixes: `0.4.0` is the stable v1 line and `0.5.0-beta.x` is the v2 prerelease line. Check the npm dist-tags and the release notes in this repo for the current versions, and please upgrade before reporting.
 
 ## Scope and threat model
 
-This plugin does not store or transmit AWS credentials itself. Authentication is delegated to the official `kiro-cli`, which owns the AWS IAM Identity Center (SSO) token and caches it under your home directory (`~/.aws/sso/cache`). The plugin only reads opencode's own stored auth marker (`auth.json`) to decide whether to activate, and forwards prompts to a locally spawned `kiro-cli` process over the Agent Client Protocol (ACP). It sends no credentials, prompt content, or telemetry anywhere beyond that local process and the Kiro service that `kiro-cli` connects to.
+This plugin does not store or transmit AWS credentials itself. Authentication is delegated to the official `kiro-cli`, which owns the AWS IAM Identity Center (SSO) token and caches it under your home directory (`~/.aws/sso/cache`). The plugin's auth authority is `verifyAuth()`, which delegates to `kiro-cli`; the only credential the plugin stores is a non-secret presence record (`expires: 0`, no token copies). It never reads opencode's private `auth.json` and never writes `tui.json`. It forwards prompts to a locally spawned `kiro-cli` process over the Agent Client Protocol (ACP) and sends no credentials, prompt content, or telemetry anywhere beyond that local process and the Kiro service that `kiro-cli` connects to.
 
 Like opencode itself, the agent is not sandboxed; the plugin runs within opencode's trust and permission model.
 

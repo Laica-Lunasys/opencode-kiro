@@ -37,29 +37,39 @@ Runtime model discovery changes must treat the SDK's normalized `runtimeEfforts`
 
 ## Running the plugin locally against opencode
 
-Build first, then point opencode at your checkout by absolute path in both config files (`opencode.json` and `tui.json`), in the project's `.opencode/` dir or the global `~/.config/opencode/`:
+Build first, then point opencode at your checkout by absolute path in both `plugins` arrays: the server config (`opencode.json`, in the project's `.opencode/` dir or the global `~/.config/opencode/`) and the global TUI config (`~/.config/opencode/cli.json`):
 
 ```bash
 npm run build
 ```
 
 ```json
-{ "plugin": ["/absolute/path/to/opencode-kiro"] }
+{ "plugins": ["/absolute/path/to/opencode-kiro"] }
 ```
 
-opencode resolves the correct entrypoint per file from the package `exports`. The `kiro` provider itself comes from the models.dev catalog, not this plugin, so a local checkout that wants to tests Kiro models not yet published in models.dev also needs a catalog that includes `kiro`. Point opencode at one with `OPENCODE_MODELS_PATH`:
+opencode resolves the correct entrypoint per file from the package `exports` (`./server` for the server config, `./tui` for `cli.json`). If the catalog opencode loads has no `kiro` entry, the plugin self-registers the provider and the runtime-discovered models after `opencode auth login`, so no custom catalog is required for basic testing:
 
 ```bash
-OPENCODE_MODELS_PATH=/path/to/api.json opencode models | grep '^kiro/'
+opencode models | grep '^kiro/'
 ```
 
 See the README's "Local development (path source)" section for the full details.
+
+## Testing against a local models.dev catalog (`OPENCODE_MODELS_PATH`)
+
+`OPENCODE_MODELS_PATH=<path>/api.json` points opencode at a local models.dev catalog build. It is the highest-precedence catalog source: file > baked catalog > network fetch (per `packages/cli/src/server-process.ts:90-94` at pinned SHA `b47cfbee7c`).
+
+Use it to run the plugin against a models.dev build that contains the `kiro` provider entry. That exercises the enrichment path, where the catalog supplies rich model metadata (context windows, reasoning effort) that the plugin merges with runtime discovery, instead of the self-registration fallback above:
+
+```bash
+OPENCODE_MODELS_PATH=/abs/path/to/api.json opencode
+```
 
 ## Beware of stale plugin caches
 
 opencode does not run your working copy directly. It resolves plugins from its package cache at `~/.cache/opencode/packages/<spec>` (honoring `$XDG_CACHE_HOME`). Bare or `@latest` specs are installed once and then frozen: opencode will not re-fetch them, so a newer publish or a local rebuild is not picked up until the cache entry is removed. When iterating locally:
 
-- Prefer an absolute path source (`"plugin": ["/abs/path/to/opencode-kiro"]`) so there is no cache indirection, or pin an exact version and bump it on each change.
+- Prefer an absolute path source (`"plugins": ["/abs/path/to/opencode-kiro"]`) so there is no cache indirection, or pin an exact version and bump it on each change.
 - If a stale build or a stale bundled `kiro-acp-ai-provider` is in use (symptom: `sdk.languageModel is not a function`), remove the cached copies and retry:
 
   ```bash
@@ -67,7 +77,7 @@ opencode does not run your working copy directly. It resolves plugins from its p
   rm -r "${XDG_CACHE_HOME:-$HOME/.cache}/opencode/packages/kiro-acp-ai-provider"
   ```
 
-- The TUI credits box and footer chip are resolved the same way from the `plugin` list in `tui.json`, so they are subject to the same caching.
+- The TUI sidebar credits box is resolved the same way from the `plugins` list in the global `cli.json`, so it is subject to the same caching.
 
 ## Verifying in a clean-room sandbox
 
@@ -81,13 +91,13 @@ export XDG_STATE_HOME="$SANDBOX/state"
 export XDG_CACHE_HOME="$SANDBOX/cache"
 mkdir -p "$XDG_CONFIG_HOME/opencode"
 
-# Set these placeholders to absolute paths for your local checkouts.
+# Set this placeholder to the absolute path of your local checkout.
 export OPENCODE_KIRO_ROOT="/absolute/path/to/opencode-kiro"
-export OPENCODE_MODELS_PATH="/absolute/path/to/models.dev/packages/web/dist/_api.json"
 
-# Load the plugin by absolute path (avoids cache indirection). The credits box
-# and chip also require the plugin to be listed in tui.json.
-printf '{"plugin":["%s"]}\n' "$OPENCODE_KIRO_ROOT" > "$XDG_CONFIG_HOME/opencode/tui.json"
+# Load the plugin by absolute path (avoids cache indirection): server entry via
+# the server config, TUI entry (sidebar credits box) via the global cli.json.
+printf '{"plugins":["%s"]}\n' "$OPENCODE_KIRO_ROOT" > "$XDG_CONFIG_HOME/opencode/opencode.json"
+printf '{"plugins":["%s"]}\n' "$OPENCODE_KIRO_ROOT" > "$XDG_CONFIG_HOME/opencode/cli.json"
 ```
 
 Then build a standalone opencode and run it against the sandbox. Because `HOME` is untouched, `kiro-cli` auth still works; because XDG is sandboxed, opencode starts from a fresh, empty config, so you can verify first-run behavior (consent prompt, no stored credential, auth-gated runtime model discovery).
@@ -118,7 +128,7 @@ Common types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`.
 Examples:
 
 - `fix: handle auth path on Windows`
-- `feat: surface credits unit in footer chip`
+- `feat: show credits unit in the sidebar box`
 - `docs: clarify local development setup`
 
 ## Style
