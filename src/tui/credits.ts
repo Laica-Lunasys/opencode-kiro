@@ -1,8 +1,9 @@
 // pure credit helpers (no opentui/solid imports, so they test under plain Node).
-// credits come from part.metadata?.kiro ({ credits, creditsUnit }), not providerMetadata.
+// v2 core stores metadata[providerMetadataKey] key-unwrapped, so credits live at part.state.credits /
+// part.state.creditsUnit on text and reasoning content parts — never nested under a provider key.
 // dedupe: count once per message; text and reasoning parts carry the same turn total (dual emission), so last-carrier-wins and parts are never summed.
 
-/** Any part-like object. `object` (not `{ metadata?: unknown }`) so metadata-less SDK Part variants stay assignable. */
+/** Any part-like object. `object` (not `{ state?: unknown }`) so state-less content-part variants stay assignable. */
 export type CreditPart = object
 
 /** Minimal message shape; SDK `Message` is assignable. */
@@ -32,18 +33,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
 
-/** Read `{ kiro: { credits, creditsUnit } }` from a part; only finite numeric credits count. */
+/**
+ * Validate key-unwrapped credit state (`{ credits, creditsUnit }`); only finite numeric credits count,
+ * and only non-empty string units. Shared by durable part reads and the transient text-ended store so
+ * both paths accept exactly the same shapes.
+ */
+export function readCreditState(state: unknown): PartCredits | undefined {
+  if (!isRecord(state)) return undefined
+  if (typeof state.credits !== "number" || !Number.isFinite(state.credits)) return undefined
+  return {
+    credits: state.credits,
+    unit: typeof state.creditsUnit === "string" && state.creditsUnit.length > 0 ? state.creditsUnit : undefined,
+  }
+}
+
+/** Read key-unwrapped `state.credits`/`state.creditsUnit` from a text or reasoning content part. */
 export function readPartCredits(part: CreditPart): PartCredits | undefined {
   if (!isRecord(part)) return undefined
-  const metadata = part.metadata
-  if (!isRecord(metadata)) return undefined
-  const kiro = metadata.kiro
-  if (!isRecord(kiro)) return undefined
-  if (typeof kiro.credits !== "number" || !Number.isFinite(kiro.credits)) return undefined
-  return {
-    credits: kiro.credits,
-    unit: typeof kiro.creditsUnit === "string" && kiro.creditsUnit.length > 0 ? kiro.creditsUnit : undefined,
-  }
+  if (part.type !== "text" && part.type !== "reasoning") return undefined
+  return readCreditState(part.state)
 }
 
 /** One message's credits, deduped by the last-carrier-wins rule (parts never summed); unit from the most recent carrier. */
