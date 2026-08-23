@@ -134,21 +134,21 @@ describe("scaffold package contract", () => {
     expect(missing).toEqual([])
   })
 
-  test("no credits-chip chunk survives (composer strip descoped at re-pin)", async () => {
-    // The re-pin SHA's typed SlotMap removed session.composer.top; the chip view
-    // and its lazy-import chunk were deleted — only the box view chunk may exist.
+  test("credits-chip chunk is back alongside the box chunk (Phase 8 revived composer chip)", async () => {
+    // dev-17968's typed SlotMap re-added session.composer.top; the chip view and
+    // its lazy-import chunk returned — both view chunks must now be emitted.
     const distFiles = await readdir(join(ROOT, "dist"))
 
-    expect(distFiles.filter((file) => file.includes("credits-chip-view"))).toEqual([])
+    expect(distFiles.some((file) => file.includes("credits-chip-view"))).toBe(true)
     expect(distFiles.some((file) => file.includes("credits-box-view"))).toBe(true)
   })
 })
 
 describe("pins and installed tarball (task 02)", () => {
-  test("version is 0.5.0-beta.1", async () => {
+  test("version is 0.5.0-beta.2", async () => {
     const pkg = await readPkg()
 
-    expect(pkg.version).toBe("0.5.0-beta.1")
+    expect(pkg.version).toBe("0.5.0-beta.2")
   })
 
   test("v2-sensitive deps are exact pins", async () => {
@@ -156,9 +156,9 @@ describe("pins and installed tarball (task 02)", () => {
 
     // exact expected specifier per dependency block; no `^`/`~`/`*`, no dist-tag
     const expected: Array<[Record<string, string> | undefined, string, string]> = [
-      [pkg.devDependencies, "@opencode-ai/plugin", "0.0.0-next-16420"],
-      [pkg.peerDependencies, "@opencode-ai/plugin", "0.0.0-next-16420"],
-      [pkg.dependencies, "@opentui/solid", "0.4.5"],
+      [pkg.devDependencies, "@opencode-ai/plugin", "0.0.0-dev-17968"],
+      [pkg.peerDependencies, "@opencode-ai/plugin", "0.0.0-dev-17968"],
+      [pkg.dependencies, "@opentui/solid", "0.5.7"],
       [pkg.dependencies, "solid-js", "1.9.12"],
       [pkg.dependencies, "kiro-acp-ai-provider", "3.0.0"],
     ]
@@ -171,7 +171,7 @@ describe("pins and installed tarball (task 02)", () => {
     }
   })
 
-  test("installed plugin package has v2 exports layout", async () => {
+  test("installed plugin package has the dev-17968 v2 exports layout", async () => {
     const installed = JSON.parse(
       await readFile(join(ROOT, "node_modules", "@opencode-ai", "plugin", "package.json"), "utf8"),
     ) as { exports?: Record<string, unknown> }
@@ -182,20 +182,24 @@ describe("pins and installed tarball (task 02)", () => {
     expect(subpaths).toContain("./tui")
     // the stale v1-era layout routes the promise API through ./v2/promise; reject it
     expect(subpaths).not.toContain("./v2/promise")
+    // dev-17968 dropped the ./v1 compatibility subpath entirely
+    expect(subpaths).not.toContain("./v1")
   })
 })
 
 describe("v2 module contracts (task 03)", () => {
-  test("server entry exports { id: 'kiro', setup }", async () => {
+  test("server entry exports { id: 'kiro', tui: true, setup }", async () => {
     const mod = await importDist("server.js")
 
     expect(mod.default.id).toBe("kiro")
     expect(typeof mod.default.setup).toBe("function")
+    // dev-17968 auto-load flag: the host loads ./tui itself for npm installs
+    expect(mod.default.tui).toBe(true)
     // named export kept for compatibility; same reference as the default so they can't drift
     expect(mod.KiroAuthPlugin).toBe(mod.default)
     // loader rejects modules exposing both kinds: no v1 wrapper properties anywhere
+    // (`tui` above is the boolean flag, never a v1 module-kind object)
     expect("server" in mod.default).toBe(false)
-    expect("tui" in mod.default).toBe(false)
   })
 
   test("tui entry exports { id: 'opencode-kiro', setup }", async () => {
@@ -295,8 +299,7 @@ const v2SensitivePins = async (): Promise<Array<[name: string, version: string]>
   ]
 }
 
-const TESTED_OPENCODE_SHA = "b47cfbee7c4fd24e5d73e5753b4755db62a92a63"
-const RELEASE_NOTES_FILE = "RELEASE_NOTES_0.5.0-beta.1.md"
+const TESTED_OPENCODE_SHA = "1cf61593b5ec204619b3f679fe418fec10ca5934"
 
 describe("packaging and docs invariants (task 12)", () => {
   test("pack payload is dist-only", async () => {
@@ -305,7 +308,7 @@ describe("packaging and docs invariants (task 12)", () => {
     const paths = manifest.files.map((file) => file.path)
 
     // tarball name embeds the pinned prerelease version
-    expect(manifest.filename).toBe("opencode-kiro-0.5.0-beta.1.tgz")
+    expect(manifest.filename).toBe("opencode-kiro-0.5.0-beta.2.tgz")
 
     // exhaustive whitelist: built artifacts + the three npm-mandated metadata files
     const stray = paths.filter(
@@ -324,28 +327,29 @@ describe("packaging and docs invariants (task 12)", () => {
     expect(paths.some((path) => path === "dist/tui.d.ts")).toBe(true)
   }, 60_000)
 
-  test("pins consistent across package.json / PINNED_VERSIONS / release notes", async () => {
+  // TODO(task-29): RELEASE_NOTES_0.5.0-beta.2.md does not exist yet — task 29
+  // stages the beta.2 release notes. Until then the consistency lock is scoped
+  // to package.json + PINNED_VERSIONS.md; task 29 re-adds the release-notes
+  // rows (pin table + tested SHA + no-floating-tags) to this suite.
+  test("pins consistent across package.json / PINNED_VERSIONS", async () => {
     const pkg = await readPkg()
     const pins = await v2SensitivePins()
     const pinned = await readFile(join(ROOT, "PINNED_VERSIONS.md"), "utf8")
-    const notes = await readFile(join(ROOT, RELEASE_NOTES_FILE), "utf8")
 
     // package.json is internally consistent: dev and peer pins of the plugin API match
     expect(pkg.devDependencies?.["@opencode-ai/plugin"]).toBe(pkg.peerDependencies?.["@opencode-ai/plugin"])
 
-    // each document's pin-table row must carry EXACTLY the package.json specifier;
+    // the pin-table row must carry EXACTLY the package.json specifier;
     // any drift in either direction breaks the row match
     for (const [name, version] of pins) {
       expect(version, `${name} must be pinned in package.json`).not.toBe("")
       const row = `| \`${name}\` | \`${version}\` |`
       expect(pinned, `PINNED_VERSIONS.md row for ${name}@${version}`).toContain(row)
-      expect(notes, `${RELEASE_NOTES_FILE} row for ${name}@${version}`).toContain(row)
     }
 
-    // prerelease version string agrees everywhere (the notes filename pins it too)
-    expect(pkg.version).toBe("0.5.0-beta.1")
-    expect(pinned).toContain("0.5.0-beta.1")
-    expect(notes).toContain("0.5.0-beta.1")
+    // prerelease version string agrees
+    expect(pkg.version).toBe("0.5.0-beta.2")
+    expect(pinned).toContain("0.5.0-beta.2")
   })
 
   test("README documents plural plugins for server and cli.json for TUI", async () => {
@@ -364,17 +368,20 @@ describe("packaging and docs invariants (task 12)", () => {
     }
   })
 
-  test("release notes carry tested SHA and no floating tags", async () => {
-    const notes = await readFile(join(ROOT, RELEASE_NOTES_FILE), "utf8")
+  test("PINNED_VERSIONS carries the Phase 8 tested SHA and no floating tags", async () => {
+    const pinned = await readFile(join(ROOT, "PINNED_VERSIONS.md"), "utf8")
 
-    expect(notes).toContain(TESTED_OPENCODE_SHA)
+    expect(pinned).toContain(TESTED_OPENCODE_SHA)
 
     // no `pkg@latest` / `pkg@next` / `pkg@beta` / `pkg@dev` install specifier anywhere
-    expect(notes).not.toMatch(/@(latest|next|beta|dev)(?![\w.-])/)
+    // (`0.0.0-dev-17968` is an exact version STRING, not the `dev` dist-tag)
+    expect(pinned).not.toMatch(/@(latest|next|beta|dev)(?![\w.-])/)
     // and no floating range specifiers for the v2-sensitive deps
     for (const [name] of await v2SensitivePins()) {
-      expect(notes).not.toMatch(new RegExp(`\`${name}\`\\s*\\|\\s*\`[~^*]`))
+      expect(pinned).not.toMatch(new RegExp(`\`${name}\`\\s*\\|\\s*\`[~^*]`))
     }
+    // TODO(task-29): apply the same SHA + no-floating-tags locks to
+    // RELEASE_NOTES_0.5.0-beta.2.md once task 29 creates it.
   })
 })
 
@@ -428,17 +435,18 @@ describe("packed tarball entry resolution (task 13)", () => {
        console.log(JSON.stringify({
          id: mod.default?.id,
          setup: typeof mod.default?.setup,
+         tui: mod.default?.tui,
          hasServerProp: "server" in (mod.default ?? {}),
-         hasTuiProp: "tui" in (mod.default ?? {}),
          namedIsDefault: mod.KiroAuthPlugin === mod.default,
        }));`,
     )
 
+    // `tui: true` is the dev-17968 auto-load flag (boolean, not a v1 module kind)
     expect(JSON.parse(out)).toEqual({
       id: "kiro",
       setup: "function",
+      tui: true,
       hasServerProp: false,
-      hasTuiProp: false,
       namedIsDefault: true,
     })
   }, 30_000)
