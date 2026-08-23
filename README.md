@@ -1,10 +1,10 @@
 # opencode-kiro
 
-> ⚠️ **Experimental prerelease** — `0.5.0-beta.1` targets the **unreleased OpenCode v2**
+> ⚠️ **Experimental prerelease** — `0.5.0-beta.2` targets the **unreleased OpenCode v2**
 > plugin contract at a pinned snapshot. It does **not** work with OpenCode v1.
 > v1 users: stay on **`opencode-kiro@0.4.0`** (the `main` branch / npm `latest` line,
 > which remains the supported stable release). See
-> [RELEASE_NOTES_0.5.0-beta.1.md](./RELEASE_NOTES_0.5.0-beta.1.md) and
+> [RELEASE_NOTES_0.5.0-beta.2.md](./RELEASE_NOTES_0.5.0-beta.2.md) and
 > [PINNED_VERSIONS.md](./PINNED_VERSIONS.md) for exact pins and the tested OpenCode SHA.
 > No OpenCode v2 release date is known or claimed here.
 
@@ -20,7 +20,10 @@ The plugin supplies:
 - **Provider ownership**: an AISDK hook constructs the provider from
   [`kiro-acp-ai-provider`](https://www.npmjs.com/package/kiro-acp-ai-provider) with the
   right options (`cwd`, `agent`, `trustAllTools`, `mcpTimeout`, `contextWindows`)
-- **TUI credits display**: a live Kiro credits box in the sidebar
+- **TUI credits display**: a live Kiro credits box in the sidebar and a compact
+  credits chip in the prompt footer row beside the host cost/context display, both
+  styled with the host's active theme tokens — auto-loaded from the same single
+  config entry (`tui: true`)
 
 `kiro-acp-ai-provider` talks to your locally installed `kiro-cli` over Kiro's
 [Agent Client Protocol](https://agentclientprotocol.com) (ACP). This is the supported
@@ -33,9 +36,9 @@ This prerelease is built and tested against **one pinned OpenCode v2 snapshot**:
 
 | Item | Value |
 |---|---|
-| Tested OpenCode commit (`upstream/v2`) | `b47cfbee7c4fd24e5d73e5753b4755db62a92a63` |
-| `@opencode-ai/plugin` | `0.0.0-next-16420` (exact) |
-| Package version | `0.5.0-beta.1` |
+| Tested OpenCode commit (`upstream/v2`) | `1cf61593b5ec204619b3f679fe418fec10ca5934` |
+| `@opencode-ai/plugin` | `0.0.0-dev-17968` (exact) |
+| Package version | `0.5.0-beta.2` |
 
 Full pin table and verification evidence: [PINNED_VERSIONS.md](./PINNED_VERSIONS.md).
 There is no `engines.opencode` constraint — the v2 host has no stable semver yet; the
@@ -51,79 +54,81 @@ tested SHA above is the compatibility target. Other v2 snapshots may or may not 
 
 ## Install and configure
 
-OpenCode v2 splits plugin configuration into **two separate files**, and both entries
-are configured manually:
+**One config entry — that's the whole setup.** Add the package to the **`plugins`**
+array (plural) of your OpenCode config (`opencode.json`, project or global):
 
-### 1. Server plugin — `plugins` in your OpenCode config
+```json
+{
+  "plugins": ["opencode-kiro@0.5.0-beta.2"]
+}
+```
 
-Add the package to the **`plugins`** array (plural) of your OpenCode config
-(`opencode.json`, project or global). The object form pins the version and leaves room
-for future options:
+The object form pins the same version and leaves room for future options:
 
 ```json
 {
   "plugins": [
     {
-      "package": "opencode-kiro@0.5.0-beta.1",
+      "package": "opencode-kiro@0.5.0-beta.2",
       "options": {}
     }
   ]
 }
 ```
 
-A plain package string is also accepted:
-
-```json
-{
-  "plugins": ["opencode-kiro@0.5.0-beta.1"]
-}
-```
-
 This loads the server entry (`./server` export): auth, model discovery, and provider
-ownership.
+ownership. The server plugin declares **`tui: true`**, so the host TUI **auto-loads the
+package's `./tui` entrypoint by itself** — the sidebar credits box and the prompt footer
+credits chip appear with no further configuration. **No `cli.json` TUI entry is
+needed.** (The beta.1 two-file setup is obsolete: if you added `"opencode-kiro"` to
+your global `cli.json` `plugins` array for beta.1, remove it.)
 
-### 2. TUI plugin — `plugins` in your global `cli.json`
+### Disabling
 
-To enable the Kiro credits sidebar, add `"opencode-kiro"` to the **`plugins`** array in
-your **global `cli.json`** (typically `~/.config/opencode/cli.json`) and restart
-opencode:
+One `"-kiro"` directive in the same `plugins` array disables **everything**: it removes
+the server plugin, and with it the `tui: true` auto-load, so the TUI half never
+activates either:
 
 ```json
 {
-  "plugins": ["opencode-kiro"]
+  "plugins": ["opencode-kiro@0.5.0-beta.2", "-kiro"]
 }
 ```
-
-This loads the TUI entry (`./tui` export): the sidebar credits box. The connect flow
-shows these same steps when you answer **Yes** to the
-"Enable the Kiro credits sidebar?" prompt during `opencode auth login`.
 
 ### Legacy `tui.json` (v1)
 
 `tui.json` is **legacy v1 configuration** and, under v2, is **migration input only**:
-the host may read it when migrating old setups, and this plugin **never modifies it**
-(the v1 consent-driven update of that file was deleted in v2). Do not add new entries
-to `tui.json`; use the global `cli.json` `plugins` array described above.
+the host may read it when migrating old setups, and this plugin **never modifies it**.
+Do not add new entries to `tui.json` (or to `cli.json` — neither is used by this
+plugin anymore); the single `plugins` entry above is the only configuration.
 
 ### Local development (path source)
 
-Run a local checkout without npm — build first, then reference the repo directory by
-absolute path in both `plugins` arrays:
+Run a local checkout without npm — build and pack first, then reference the tarball
+with the `name@file:` form in the `plugins` array:
 
 ```bash
 git clone https://github.com/NachoFLizaur/opencode-kiro && cd opencode-kiro
-npm install && npm run build
+npm install && npm run build && npm pack
 ```
 
 ```json
-{ "plugins": ["/absolute/path/to/opencode-kiro"] }
+{ "plugins": ["opencode-kiro@file:/absolute/path/to/opencode-kiro-0.5.0-beta.2.tgz"] }
 ```
 
-OpenCode resolves the right entrypoint per file from the package `exports`
-(`./server` for the server config, `./tui` for `cli.json`). Each entry module exports
-its own `id`, which file-source TUI installs require: the server plugin's id is
-`kiro` and the TUI plugin's id is `opencode-kiro`. Enable/disable directives and
-host logs use `kiro` for the server plugin and `opencode-kiro` for the TUI plugin.
+A bare path or bare `file:` spec is rejected at the tested SHA — the `name@file:` form
+is required. **Caveat (local `file:` installs only)**: the colon in the resulting
+install dirname defeats the host's OpenTUI loader shim, so the TUI surfaces render a
+contained per-slot error notice instead of the credits views (the rest of the TUI keeps
+working). Registry installs (`opencode-kiro@0.5.0-beta.2`) use colon-free paths and are
+fully green — this affects local tarball validation only.
+
+The host resolves entrypoints from the package `exports` (`./server` for the server
+half, `./tui` for the auto-loaded TUI half). Each entry module exports its own `id`:
+the server plugin's id is `kiro` and the TUI plugin's id is `opencode-kiro`. Under
+`tui: true` there is no separate TUI directive to manage — `-kiro` (the server id) is
+the single kill-switch, and host logs use `kiro` for the server half and
+`opencode-kiro` for the TUI half.
 
 ## Auth
 
@@ -137,6 +142,11 @@ Select the **Kiro** integration, then the **Kiro CLI Login** method:
 - **Not logged in**: the plugin launches `kiro-cli login`, which opens a browser window.
   Complete the login there; the plugin polls for up to 120 seconds and stores a minimal
   credential record when kiro-cli reports success.
+
+There is no configuration prompt during login anymore: the beta.1
+"Enable the Kiro credits sidebar?" consent select was removed (upstream deleted the
+prompts API in favor of forms — and the sidebar no longer needs consent-driven config,
+since `tui: true` auto-loads it).
 
 If the flow times out, authenticate directly with kiro-cli (`kiro-cli login`) and run
 `opencode auth login` again; the fast path then completes immediately.
@@ -176,42 +186,50 @@ so even the lowest level still produces a reasoning trail.
 
 Kiro is subscription-metered: requests consume **credits**, and the dollar cost
 OpenCode normally displays for Kiro turns is always $0.00. To surface credits the TUI
-plugin renders one surface:
+plugin renders two surfaces:
 
-- a Kiro credits box in the sidebar (`sidebar.content` slot), showing the session's
+- a Kiro credits box in the sidebar (`sidebar.content` claim), showing the session's
   live credits total and unit
+- a compact credits chip in the prompt footer row beside the host cost/context
+  display (`prompt.footer.status` claim, v1 placement restored) with the same total
 
-It renders only for sessions that carry Kiro credit data; other sessions are
-unchanged. The credits value and unit come from the provider state the SDK attaches to
-each message part (`part.state.credits` / `part.state.creditsUnit`); nothing is
-hardcoded client-side. The only configuration needed is the `cli.json` `plugins` entry
-from [Install](#2-tui-plugin--plugins-in-your-global-clijson).
+Both are additive `append` claims — they compose with the host's built-in content and
+never replace it — and both pick up the active theme's text tokens (feature-detected;
+with no theme they fall back to default terminal styling). They render only for
+sessions that carry Kiro credit data; other sessions are unchanged. The credits value
+and unit come from the provider state the host persists on each message part
+(`part.state.credits` / `part.state.creditsUnit`); nothing is hardcoded client-side.
+The only configuration needed is the single `plugins` entry from
+[Install](#install-and-configure) — the TUI half auto-loads via `tui: true`.
 
-While a turn is still streaming, credits for just-ended text are picked up live through
-a transient store that works around a host reducer bug at the pinned snapshot (the
-text-ended event's provider state is dropped by the host); once durable message state
-arrives, it is authoritative and nothing is double-counted. See the release notes for
-details.
+Durable credits are read straight from host message state (the host persists provider
+state on text end — fixed upstream since beta.1). While a turn is still streaming,
+credits for just-ended text are picked up live through a transient overlay that works
+around a host reducer bug at the pinned snapshot (the live event path still drops
+provider state); once durable state arrives it is authoritative and nothing is
+double-counted. See the release notes for details.
 
 ## Known limitations (prerelease)
 
-- **No slot ordering.** OpenCode v2 slots have no order parameter, so the sidebar
-  credits box renders where the host places `sidebar.content` contributions (after the
-  built-in sidebar sections), not at a plugin-chosen position.
-- **Default styling.** The pinned snapshot has no supported theme-token API for plugin
-  views, so the credits box uses default/inherited terminal styling instead of
-  matching the active theme.
-- **Reduced toast feedback.** Auth-flow feedback is delivered as connect-flow text
-  (method instructions and the sidebar setup steps) rather than toasts. A toast API
-  exists at the pinned snapshot, but this plugin's core deliberately does not depend on
-  it — the TUI context surface is churning and toast availability is not guaranteed
-  across snapshots.
-- **Live text credits use a workaround.** See [Credits in the TUI](#credits-in-the-tui)
-  and the release notes.
+- **Live text credits use a transient overlay.** The durable credits path is fixed
+  upstream, but the live `session.text.ended` reducer still drops provider state at
+  the tested SHA, so in-turn updates come from the plugin's transient overlay
+  (durable state always wins on reconcile). See
+  [Credits in the TUI](#credits-in-the-tui) and the release notes.
 - **Credits render in the TUI only.** Every other cost surface (ACP clients, web,
   desktop, share pages, CLI cost output) shows $0.00 for Kiro sessions because the
   catalog declares Kiro's per-token `cost` as 0 (subscription-metered, no per-token
   pricing). That is expected, not a defect.
+- **Local `file:` installs show a per-slot TUI error.** The colon in a `name@file:`
+  install dirname defeats the host's OpenTUI loader shim; the failure is contained to
+  the plugin's slots (dismissible error notice, host TUI unaffected). Registry
+  installs are colon-free and fully working — this affects local tarball validation
+  only.
+- **Reduced toast feedback.** Auth-flow feedback is delivered as connect-flow text
+  rather than toasts; this plugin's core deliberately does not depend on the churning
+  TUI toast API.
+- **One tested snapshot.** All pins are exact and the compatibility target is a single
+  OpenCode v2 SHA (see [Compatibility](#compatibility)); other snapshots may not work.
 
 ## How it works
 
@@ -241,10 +259,10 @@ details.
 |---|---|
 | `kiro-cli is not installed` during auth | Install kiro-cli from <https://kiro.dev/docs/cli/> and ensure it is on `PATH` for the opencode process. |
 | Auth times out after ~120s | Complete the browser login faster, or run `kiro-cli login` yourself, then re-run `opencode auth login` (fast path). |
-| No credits line / credits stay 0 | Credits appear after the first **completed** kiro turn; cancelled turns and turns without usage state contribute nothing. Check `"opencode-kiro"` is listed in your global `cli.json` `plugins` array. |
-| Credits box never appears | The TUI entry loads from the global `cli.json` `plugins` array only — a server-side `plugins` entry alone does not enable it. Add the `cli.json` entry and restart opencode. |
+| No credits line / credits stay 0 | Credits appear after the first **completed** kiro turn; cancelled turns and turns without usage state contribute nothing. Check the plugin is active (no stray `"-kiro"` directive — note that directive residue can persist on a reused data dir). |
+| Credits surfaces never appear | The TUI half auto-loads from the server `plugins` entry via `tui: true` — no separate TUI config exists. If the box/chip are missing, the server plugin itself is not loading (check your `plugins` entry and restart opencode). For local `name@file:` tarball installs, a contained per-slot error notice instead of the credits views is the known colon-path caveat; use a registry install. |
 | `kiro` provider not showing in `opencode models` | Run `opencode auth login` first: models are discovered after auth. If the loaded catalog lacks a `kiro` entry, the plugin self-registers a minimal fallback during discovery. |
-| Path install rejected (`must export id`) | Run `npm run build` in your checkout first and reference the repo root (both entry modules export ids). |
+| Path install rejected (`must export id`) | Use the `name@file:<absolute tarball path>` form after `npm run build && npm pack` in your checkout (both entry modules export ids). |
 | Provider visible but runs fail | The provider can be selectable before any credential exists. Run `opencode auth login` first. |
 | Worked yesterday, broken today | This prerelease targets one pinned OpenCode snapshot (see [Compatibility](#compatibility)). If your OpenCode build moved past the tested SHA, the v2 plugin surface may have changed underneath it. |
 
@@ -255,7 +273,7 @@ v1 (`opencode >= 1.16.0`). It uses the v1 contract throughout: singular `plugin`
 arrays in `opencode.json` and `tui.json`, the `opencode plugin opencode-kiro`
 installer, and `part.metadata.kiro` credits. Its full documentation is the README at
 the [`v0.4.0` tag](https://github.com/NachoFLizaur/opencode-kiro/tree/v0.4.0)
-(equivalently, `main`). Do not install `0.5.0-beta.1` into an OpenCode v1 setup.
+(equivalently, `main`). Do not install `0.5.0-beta.2` into an OpenCode v1 setup.
 
 ## Development
 

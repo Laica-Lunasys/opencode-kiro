@@ -28,7 +28,7 @@ const NOT_INSTALLED_MESSAGE = "kiro-cli is not installed. Install it from https:
 const TIMEOUT_MESSAGE =
   "Kiro authentication timed out. Run `kiro-cli login` manually, then re-run `opencode auth login`."
 const LOGIN_INSTRUCTIONS =
-  "Complete Kiro authentication in the browser window that just opened. Waiting for login..."
+  "Complete Kiro authentication in the browser window that just opened (if no browser opened, run `kiro-cli login` in another terminal). Waiting for login..."
 const ALREADY_AUTHENTICATED_INSTRUCTIONS = "Already authenticated with Kiro CLI."
 
 // login-flow resources tracked for task 07's aggregated cleanup: the spawned

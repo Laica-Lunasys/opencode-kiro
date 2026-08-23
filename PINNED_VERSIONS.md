@@ -267,3 +267,102 @@ Full host e2e re-run at the NEW pin. **RE-PIN VERIFIED** — evidence in
 - **Post-publish verification**: bundled-binary smoke rebuilt from the registry
   package PASSED — see `HOST_E2E_REPORT.md` → "Published-package smoke
   (0.5.0-beta.1 @ registry)".
+
+## Host validation evidence — beta.2 candidate (recorded by task 28, `opencode-v2` @ `d3458cc`, 2026-08-23)
+
+Full host e2e at the Phase 8 pin — **BETA.2 E2E VERIFIED** (all 9 checklist rows
+PASS); evidence in `HOST_E2E_REPORT.md` → "Beta.2 e2e at 1cf61593b5".
+
+- **OpenCode SHA re-confirmed at test time**: `1cf61593b5ec204619b3f679fe418fec10ca5934`
+  (detached read-only worktree; `rev-parse HEAD` matched the pin exactly; clone
+  stayed on `feat/kiro-provider` @ `3a68247163` with empty porcelain before AND
+  after; worktree removed). Host repo pins `packageManager: bun@1.3.14` at this
+  SHA; bun 1.3.14 used.
+- **Artifact under test**: `opencode-kiro-0.5.0-beta.2.tgz` (fresh `npm pack` at
+  `d3458cc`: 10 files, 12.9 kB, shasum `96eddb597356773620f57ac8655ebadd6de458be`).
+  Compare this against `dist.shasum` after the USER publishes.
+- **Headline verified**: `tui: true` auto-load — ONE server `plugins` config
+  entry, NO cli.json TUI entry; `plugin.list` carries `"tui": true`; the host TUI
+  resolves and loads `./tui` itself; sidebar box + composer-top chip both render
+  with host theme tokens.
+- **B4 status at this pin**: still applies to `name@file:<tgz>` installs (colon
+  install dirname defeats the loader shim) BUT the failure is now a contained
+  per-slot error notice, not a whole-TUI crash. Registry-layout (colon-free)
+  install verified fully green — the shipping channel is unaffected. Local
+  tarball TUI validation still needs a colon-free path.
+- **Credits**: durable path upstream-FIXED end-to-end (fresh mounts paint correct
+  totals from `message.list` state with no transient store); live path still
+  requires the transient overlay (`session.text.ended` reducer still copies only
+  `text` at this SHA — now in `packages/client/src/solid/data.ts`); no
+  double-count across 4 turns; 10 ms client event batching confirmed at source.
+- **Effort on the wire**: `#high` variant produced
+  `commands/execute {command:"effort",args:{value:"high"}}` on the main ACP
+  client's stdin; turn recorded `variant:"high"` + durable credits.
+- **Auth**: forms flow (`kiro-cli-login`, no `prompts` anywhere); pending →
+  cancel (204 + child cleanup) → complete states observed; credential persists
+  across server restarts.
+- **Models**: the July models.dev artifact was REUSED unmodified (NOT rejected by
+  the hardened resolution at this SHA); enrichment path verified (18 enriched,
+  catalog 18 ∩ runtime 19, `claude-opus-5` dropped).
+- **Disable**: one `-kiro` directive removes BOTH halves under `tui: true`
+  (server plugin gone from plugin.list → TUI auto-load never activates it).
+
+## Pre-publish record — 0.5.0-beta.2 release candidate (task 29, 2026-08-23)
+
+- **Pre-flight pack at the release commit** (docs + release notes staged):
+  `npm pack --dry-run` → `opencode-kiro-0.5.0-beta.2.tgz`, 10 files, package size
+  13.6 kB (unpacked 40.9 kB), dist-only payload (dist/* + package.json + README.md
+  + LICENSE), shasum `b6068466e0d1714826075ef0bcd6122a2ed934ed`. This SUPERSEDES the
+  task-28 candidate shasum `96eddb597356773620f57ac8655ebadd6de458be` (packed at
+  `d3458cc`, before the beta.2 docs landed in README.md). Compare THIS shasum
+  against registry `dist.shasum` after the USER publishes.
+- **AMENDMENT (pre-publish, chip placement)**: the credits chip moved
+  `session.composer.top` → `prompt.footer.status` (v1 footer-row placement
+  restored; user-approved). Fresh repack after the amendment:
+  `opencode-kiro-0.5.0-beta.2.tgz` shasum
+  `e1a27496cd644c60e688c1f0051b3a7052af2fad` — this SUPERSEDES the task-29
+  candidate `b6068466e0d1714826075ef0bcd6122a2ed934ed` above. Compare THIS
+  shasum against registry `dist.shasum` after the USER publishes. Placement
+  re-verified in the host at the pin (HOST_E2E_REPORT.md row C-10): chip in the
+  prompt footer row beside the host cost/context display, live-updating, sidebar
+  box unaffected.
+- **Publish handoff**: `npm whoami` returned 401 Unauthorized at pre-flight — the
+  USER must authenticate (`npm login`) before running `npm publish --tag beta` from
+  `opencode-v2`. The agent never publishes; the ACTUAL dist-tag used is recorded
+  here post-publish.
+- **Wiring-branch modernization (opencode worktree `opencode-v2-kiro`)**: new branch
+  `feat/kiro-provider-v2-repin` @ `dd78215940` on base `1cf61593b5ec204619b3f679fe418fec10ca5934`
+  — SERVER-ONLY built-in wiring (core dep `opencode-kiro` `0.5.0-beta.2` exact,
+  `internal.ts` `pre` append via `PluginPromise.fromPromise`, bunfig age-gate
+  excludes, root `@opencode-ai/plugin` `workspace:*` override). TUI half (builtins
+  append) DROPPED — obsolete via `tui: true` auto-load. The `solid-js` `catalog:`
+  override was DROPPED with it: its sole consumer was the statically bundled TUI
+  built-in; re-verify dedupe at post-publish install. `bun install` deferred to
+  post-publish (registry package required). UNPUSHED candidate; no PR. Prior branch
+  `feat/kiro-provider-v2` kept untouched @ `b5177147cc` as history.
+
+## Post-publish completion — wiring-branch install + dedupe re-check (task 29, 2026-08-23)
+
+`opencode-kiro@0.5.0-beta.2` published to the registry (dist-tag `beta`, registry
+`dist.shasum` `e1a27496cd644c60e688c1f0051b3a7052af2fad` — MATCHES the amended
+pre-publish pack shasum above). In the wiring worktree (`feat/kiro-provider-v2-repin`,
+base `1cf61593b5`), `bun install` succeeded with no age-gate error (bunfig excludes
+effective); `bun.lock` resolves `opencode-kiro@0.5.0-beta.2` with registry integrity
+`sha512-9S+y7Ft443RjtEruCimQot6yjr5A5U+BbPWYlBNjgUvbRxi9NkbxmZ4PB4wuMb4gecfz4/mWaQHOTbapvo1JQg==`
+(matches `npm view dist.integrity`), and lockfile committed as `a655467972`
+(`chore(core): lock opencode-kiro 0.5.0-beta.2 from registry (post-publish install)`).
+Dedupe re-check with the `solid-js` override DROPPED confirms the server-only wiring
+is solid-free at runtime: the published `dist/server.js` contains zero solid/opentui
+import specifiers (only dynamic `child_process` and `kiro-acp-ai-provider`), and
+`packages/core/node_modules` gains no solid-js/@opentui entries — the plugin's own
+`solid-js@1.9.12` and `@opentui/solid@0.5.7` land only in bun's isolated store
+(`node_modules/.bun/solid-js@1.9.12`, `@opentui+solid@0.5.7+7671d51c…`) as sibling
+links of the `opencode-kiro@0.5.0-beta.2` store entry, never on core's resolution
+path. That placement is benign for the `tui: true` auto-load path: the host TUI's
+runtime-plugin loader shim (`@opentui/solid` `ensureRuntimePluginSupport`, installed
+via `packages/tui/src/plugin/runtime-plugin-support.bun.ts`) registers a Bun plugin
+that rewrites `solid-js`, `solid-js/store`, and `@opentui/solid/*` specifiers in
+runtime-loaded plugin code to the HOST's module instances (catalog `solid-js@1.9.10`
+/ `@opentui/solid@0.5.7`), so the plugin's nested copies are never dual-instanced
+into the TUI. `packages/core` `bun run typecheck` (tsgo) passed clean. Branch remains
+an UNPUSHED PR candidate; no binaries rebuilt.

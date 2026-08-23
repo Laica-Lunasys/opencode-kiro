@@ -327,29 +327,29 @@ describe("packaging and docs invariants (task 12)", () => {
     expect(paths.some((path) => path === "dist/tui.d.ts")).toBe(true)
   }, 60_000)
 
-  // TODO(task-29): RELEASE_NOTES_0.5.0-beta.2.md does not exist yet — task 29
-  // stages the beta.2 release notes. Until then the consistency lock is scoped
-  // to package.json + PINNED_VERSIONS.md; task 29 re-adds the release-notes
-  // rows (pin table + tested SHA + no-floating-tags) to this suite.
-  test("pins consistent across package.json / PINNED_VERSIONS", async () => {
+  test("pins consistent across package.json / PINNED_VERSIONS / RELEASE_NOTES", async () => {
     const pkg = await readPkg()
     const pins = await v2SensitivePins()
-    const pinned = await readFile(join(ROOT, "PINNED_VERSIONS.md"), "utf8")
+    const docs: Array<[label: string, content: string]> = [
+      ["PINNED_VERSIONS.md", await readFile(join(ROOT, "PINNED_VERSIONS.md"), "utf8")],
+      ["RELEASE_NOTES_0.5.0-beta.2.md", await readFile(join(ROOT, "RELEASE_NOTES_0.5.0-beta.2.md"), "utf8")],
+    ]
 
     // package.json is internally consistent: dev and peer pins of the plugin API match
     expect(pkg.devDependencies?.["@opencode-ai/plugin"]).toBe(pkg.peerDependencies?.["@opencode-ai/plugin"])
 
-    // the pin-table row must carry EXACTLY the package.json specifier;
+    // each doc's pin-table row must carry EXACTLY the package.json specifier;
     // any drift in either direction breaks the row match
-    for (const [name, version] of pins) {
-      expect(version, `${name} must be pinned in package.json`).not.toBe("")
-      const row = `| \`${name}\` | \`${version}\` |`
-      expect(pinned, `PINNED_VERSIONS.md row for ${name}@${version}`).toContain(row)
+    for (const [label, content] of docs) {
+      for (const [name, version] of pins) {
+        expect(version, `${name} must be pinned in package.json`).not.toBe("")
+        const row = `| \`${name}\` | \`${version}\` |`
+        expect(content, `${label} row for ${name}@${version}`).toContain(row)
+      }
+      // prerelease version string agrees
+      expect(content, `${label} prerelease version`).toContain("0.5.0-beta.2")
     }
-
-    // prerelease version string agrees
     expect(pkg.version).toBe("0.5.0-beta.2")
-    expect(pinned).toContain("0.5.0-beta.2")
   })
 
   test("README documents plural plugins for server and cli.json for TUI", async () => {
@@ -368,20 +368,20 @@ describe("packaging and docs invariants (task 12)", () => {
     }
   })
 
-  test("PINNED_VERSIONS carries the Phase 8 tested SHA and no floating tags", async () => {
-    const pinned = await readFile(join(ROOT, "PINNED_VERSIONS.md"), "utf8")
+  test("PINNED_VERSIONS and RELEASE_NOTES carry the Phase 8 tested SHA and no floating tags", async () => {
+    for (const file of ["PINNED_VERSIONS.md", "RELEASE_NOTES_0.5.0-beta.2.md"]) {
+      const content = await readFile(join(ROOT, file), "utf8")
 
-    expect(pinned).toContain(TESTED_OPENCODE_SHA)
+      expect(content, `${file} tested SHA`).toContain(TESTED_OPENCODE_SHA)
 
-    // no `pkg@latest` / `pkg@next` / `pkg@beta` / `pkg@dev` install specifier anywhere
-    // (`0.0.0-dev-17968` is an exact version STRING, not the `dev` dist-tag)
-    expect(pinned).not.toMatch(/@(latest|next|beta|dev)(?![\w.-])/)
-    // and no floating range specifiers for the v2-sensitive deps
-    for (const [name] of await v2SensitivePins()) {
-      expect(pinned).not.toMatch(new RegExp(`\`${name}\`\\s*\\|\\s*\`[~^*]`))
+      // no `pkg@latest` / `pkg@next` / `pkg@beta` / `pkg@dev` install specifier anywhere
+      // (`0.0.0-dev-17968` is an exact version STRING, not the `dev` dist-tag)
+      expect(content, `${file} floating dist-tag`).not.toMatch(/@(latest|next|beta|dev)(?![\w.-])/)
+      // and no floating range specifiers for the v2-sensitive deps
+      for (const [name] of await v2SensitivePins()) {
+        expect(content, `${file} floating range for ${name}`).not.toMatch(new RegExp(`\`${name}\`\\s*\\|\\s*\`[~^*]`))
+      }
     }
-    // TODO(task-29): apply the same SHA + no-floating-tags locks to
-    // RELEASE_NOTES_0.5.0-beta.2.md once task 29 creates it.
   })
 })
 

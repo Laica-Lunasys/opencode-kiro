@@ -2,7 +2,7 @@
 // after the built-in sections (additive under the claims-based slot API — immutable
 // requirement 17). The formatted total + unit line under the "Kiro" header updates live as
 // durable/transient credits change; a compact companion chip (credits-chip-view.ts) carries
-// the same total above the composer. Presentation only: tui.ts assembles the merged
+// the same total in the prompt footer row. Presentation only: tui.ts assembles the merged
 // durable+transient rollup and passes it in as an accessor plus optional feature-detected
 // `context.theme` tokens; this module never touches the TUI context. With no tokens (absent
 // or misshapen theme), nothing sets foreground colors and the terminal/host defaults apply —
