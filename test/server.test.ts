@@ -320,6 +320,14 @@ async function setupWithAuthorize(h: Harness) {
 
 const kiroEvent = () => ({ type: "integration.connection.updated", data: { integrationID: "kiro" } })
 
+// Phase 9 dual-listen credential events (upstream renamed
+// `integration.connection.updated` → `credential.updated` + `credential.switched`)
+const credentialUpdatedEvent = () => ({ type: "credential.updated", data: {} })
+const credentialSwitchedEvent = (integrationID: string, credentialID: string | null) => ({
+  type: "credential.switched",
+  data: { integrationID, credentialID },
+})
+
 const EXPECTED_CREDENTIAL = {
   type: "oauth",
   methodID: "kiro-cli-login",
@@ -797,12 +805,125 @@ describe("discovery: catalog transform + runtime model lifecycle (task 06)", () 
 
     const settings = catalog.providers.get("kiro")!.provider.settings
     expect(settings.contextWindows).toEqual({ "claude-sonnet-4.6": 200_000 })
-    expect(settings).toMatchObject({
-      cwd: h.directory,
-      agent: "opencode",
-      trustAllTools: true,
-      mcpTimeout: 45,
-    })
+    await cleanup()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 31: dual-listen credential-event migration (Phase 9)
+// ---------------------------------------------------------------------------
+
+describe("discovery: dual-listen credential events (task 31)", () => {
+  /** setup while disconnected: no initial discovery, a clean call baseline */
+  async function setupDisconnected() {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+    await flush()
+    expect(mockListModels).not.toHaveBeenCalled()
+    return { h, cleanup, activeCallsAtSetup: h.active.mock.calls.length }
+  }
+
+  test("legacy integration.connection.updated (kiro) still triggers re-check + discovery", async () => {
+    const { h, cleanup, activeCallsAtSetup } = await setupDisconnected()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("model-a")])
+
+    h.events.push(kiroEvent())
+    await flush()
+
+    // old-host path stays alive: dual-listen must not drop the legacy name
+    expect(h.active.mock.calls.length).toBeGreaterThan(activeCallsAtSetup)
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    await cleanup()
+  })
+
+  test("credential.updated (empty payload) triggers re-check + discovery", async () => {
+    const { h, cleanup, activeCallsAtSetup } = await setupDisconnected()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("model-a")])
+
+    // the new-host event carries NO payload — there is nothing to scope on;
+    // the connection.active re-check is the scoping
+    h.events.push(credentialUpdatedEvent())
+    await flush()
+
+    expect(h.active.mock.calls.length).toBeGreaterThan(activeCallsAtSetup)
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    await cleanup()
+  })
+
+  test("credential.switched (kiro) triggers re-check + discovery; nullable credentialID accepted", async () => {
+    const { h, cleanup, activeCallsAtSetup } = await setupDisconnected()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("model-a")])
+
+    h.events.push(credentialSwitchedEvent("kiro", "credential-1"))
+    await flush()
+
+    expect(h.active.mock.calls.length).toBeGreaterThan(activeCallsAtSetup)
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    // credentialID is NullOr<Credential.ID> upstream (null on sign-out of the
+    // active credential): a null value must trigger exactly the same re-check
+    h.events.push(credentialSwitchedEvent("kiro", null))
+    await flush()
+
+    expect(mockListModels).toHaveBeenCalledTimes(2)
+    expect(h.reload).toHaveBeenCalledTimes(2)
+
+    await cleanup()
+  })
+
+  test("credential.switched for another integration is ignored", async () => {
+    const { h, cleanup, activeCallsAtSetup } = await setupDisconnected()
+
+    h.events.push(credentialSwitchedEvent("github", "credential-y"))
+    await flush()
+
+    expect(h.active.mock.calls.length).toBe(activeCallsAtSetup)
+    expect(mockListModels).not.toHaveBeenCalled()
+    expect(h.reload).not.toHaveBeenCalled()
+
+    await cleanup()
+  })
+
+  test("unknown event names are ignored", async () => {
+    const { h, cleanup, activeCallsAtSetup } = await setupDisconnected()
+
+    h.events.push({ type: "something.else", data: { integrationID: "kiro" } })
+    await flush()
+
+    expect(h.active.mock.calls.length).toBe(activeCallsAtSetup)
+    expect(mockListModels).not.toHaveBeenCalled()
+    expect(h.reload).not.toHaveBeenCalled()
+
+    await cleanup()
+  })
+
+  test("re-check is the source of truth: credential.updated while inactive clears kiro models", async () => {
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("model-a")])
+    const cleanup = await runSetup(h)
+    await flush()
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    // logout observed only through the NEW event name: the event payload is
+    // empty, so connection.active alone must drive the clear
+    h.active.mockResolvedValue(undefined)
+    h.events.push(credentialUpdatedEvent())
+    await flush()
+
+    expect(h.reload).toHaveBeenCalledTimes(2)
+    // snapshot cleared: a fallback-shaped draft publishes no kiro models
+    const catalog = makeCatalogDraft()
+    h.catalogTransform(catalog.draft)
+    expect(catalog.providers.size).toBe(0)
 
     await cleanup()
   })

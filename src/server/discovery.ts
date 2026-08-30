@@ -216,10 +216,43 @@ export function createDiscover(
   }
 }
 
-// setup-owned event consumer: filters `integration.connection.updated` for
-// integrationID "kiro" and runs a discovery. Login/logout is never inferred
-// from the event — discover() re-checks `connection.active`. Never rejects
-// (cleanup awaits this task).
+// DUAL-LISTEN credential-event filter (Phase 9 fix). Upstream removed
+// `integration.connection.updated` (multi-account credentials feature),
+// replacing it with `credential.updated` + `credential.switched`. The
+// published plugin must react on BOTH generations of hosts, so we accept all
+// three names: old hosts never fire the new names and new hosts never fire
+// the old one — dual-listen is safe both ways.
+//
+// TYPE NOTE: the legacy name is ABSENT from the pinned d.ts event-type union,
+// so a typed literal comparison would not compile (TS2367). We read
+// `event.type` through a widened `string` for the legacy check — deliberate
+// backward-compat, NOT dead code; do not "clean up" to the typed union.
+function isKiroCredentialEvent(event: ServerEvent): boolean {
+  const type: string = event.type
+
+  // legacy hosts (pre multi-account): kiro-scope on the payload as before
+  if (type === "integration.connection.updated") {
+    const data = (event as { data?: { integrationID?: unknown } }).data
+    return data?.integrationID === KIRO_INTEGRATION_ID
+  }
+
+  // new hosts: `{integrationID, credentialID(nullable)}` — kiro-scope on
+  // integrationID; credentialID (null on sign-out of the active credential)
+  // is irrelevant here — discover() re-checks connection.active anyway
+  if (event.type === "credential.switched") {
+    return asString(event.data.integrationID) === KIRO_INTEGRATION_ID
+  }
+
+  // new hosts: EMPTY payload (`Struct<{}>`) — cannot scope by integration;
+  // the `connection.active("kiro")` re-check inside discover() IS the scoping
+  // (over-firing on multi-integration hosts is absorbed by coalescing)
+  return type === "credential.updated"
+}
+
+// setup-owned event consumer: filters the dual-listen credential events for
+// Kiro and runs a discovery. Login/logout is never inferred from the event —
+// discover() re-checks `connection.active`. Never rejects (cleanup awaits
+// this task).
 async function consumeEvents(
   iterator: AsyncIterator<ServerEvent, unknown, unknown>,
   discover: (reason: string) => Promise<void>,
@@ -229,12 +262,9 @@ async function consumeEvents(
       const result = await iterator.next()
       if (result.done) return
       const event = result.value
-      if (
-        event.type === "integration.connection.updated" &&
-        event.data.integrationID === KIRO_INTEGRATION_ID
-      ) {
+      if (isKiroCredentialEvent(event)) {
         try {
-          await discover("connection-updated")
+          await discover(event.type)
         } catch {
           // discovery failures must not kill the event loop
         }

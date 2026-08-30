@@ -145,10 +145,10 @@ describe("scaffold package contract", () => {
 })
 
 describe("pins and installed tarball (task 02)", () => {
-  test("version is 0.5.0-beta.2", async () => {
+  test("version is 0.5.0-beta.3", async () => {
     const pkg = await readPkg()
 
-    expect(pkg.version).toBe("0.5.0-beta.2")
+    expect(pkg.version).toBe("0.5.0-beta.3")
   })
 
   test("v2-sensitive deps are exact pins", async () => {
@@ -156,9 +156,9 @@ describe("pins and installed tarball (task 02)", () => {
 
     // exact expected specifier per dependency block; no `^`/`~`/`*`, no dist-tag
     const expected: Array<[Record<string, string> | undefined, string, string]> = [
-      [pkg.devDependencies, "@opencode-ai/plugin", "0.0.0-dev-17968"],
-      [pkg.peerDependencies, "@opencode-ai/plugin", "0.0.0-dev-17968"],
-      [pkg.dependencies, "@opentui/solid", "0.5.7"],
+      [pkg.devDependencies, "@opencode-ai/plugin", "0.0.0-dev-18686"],
+      [pkg.peerDependencies, "@opencode-ai/plugin", "0.0.0-dev-18686"],
+      [pkg.dependencies, "@opentui/solid", "0.5.9"],
       [pkg.dependencies, "solid-js", "1.9.12"],
       [pkg.dependencies, "kiro-acp-ai-provider", "3.0.0"],
     ]
@@ -169,9 +169,14 @@ describe("pins and installed tarball (task 02)", () => {
       expect(specifier).not.toMatch(/[\^~*]/)
       expect(specifier).not.toMatch(/^(next|latest|beta|dev)$/)
     }
+
+    // the plugin pin is an exact dev-channel version STRING (never the `dev`
+    // dist-tag): the shape lock plus the equality above pins the task-30
+    // verified `0.0.0-dev-18686` (Phase 9 re-pin, PINNED_VERSIONS.md)
+    expect(pkg.devDependencies?.["@opencode-ai/plugin"]).toMatch(/^0\.0\.0-dev-\d+$/)
   })
 
-  test("installed plugin package has the dev-17968 v2 exports layout", async () => {
+  test("installed plugin package has the dev-18686 v2 exports layout", async () => {
     const installed = JSON.parse(
       await readFile(join(ROOT, "node_modules", "@opencode-ai", "plugin", "package.json"), "utf8"),
     ) as { exports?: Record<string, unknown> }
@@ -182,7 +187,7 @@ describe("pins and installed tarball (task 02)", () => {
     expect(subpaths).toContain("./tui")
     // the stale v1-era layout routes the promise API through ./v2/promise; reject it
     expect(subpaths).not.toContain("./v2/promise")
-    // dev-17968 dropped the ./v1 compatibility subpath entirely
+    // the dev channel dropped the ./v1 compatibility subpath entirely (since dev-17968)
     expect(subpaths).not.toContain("./v1")
   })
 })
@@ -299,7 +304,7 @@ const v2SensitivePins = async (): Promise<Array<[name: string, version: string]>
   ]
 }
 
-const TESTED_OPENCODE_SHA = "1cf61593b5ec204619b3f679fe418fec10ca5934"
+const TESTED_OPENCODE_SHA = "8ba434b5973856b2f32b8cd3543e154b25c413e6"
 
 describe("packaging and docs invariants (task 12)", () => {
   test("pack payload is dist-only", async () => {
@@ -308,7 +313,7 @@ describe("packaging and docs invariants (task 12)", () => {
     const paths = manifest.files.map((file) => file.path)
 
     // tarball name embeds the pinned prerelease version
-    expect(manifest.filename).toBe("opencode-kiro-0.5.0-beta.2.tgz")
+    expect(manifest.filename).toBe("opencode-kiro-0.5.0-beta.3.tgz")
 
     // exhaustive whitelist: built artifacts + the three npm-mandated metadata files
     const stray = paths.filter(
@@ -330,9 +335,10 @@ describe("packaging and docs invariants (task 12)", () => {
   test("pins consistent across package.json / PINNED_VERSIONS / RELEASE_NOTES", async () => {
     const pkg = await readPkg()
     const pins = await v2SensitivePins()
+    // TODO(task-35): add ["RELEASE_NOTES_0.5.0-beta.3.md", ...] once task 35
+    // authors the beta.3 release notes — the file does not exist yet.
     const docs: Array<[label: string, content: string]> = [
       ["PINNED_VERSIONS.md", await readFile(join(ROOT, "PINNED_VERSIONS.md"), "utf8")],
-      ["RELEASE_NOTES_0.5.0-beta.2.md", await readFile(join(ROOT, "RELEASE_NOTES_0.5.0-beta.2.md"), "utf8")],
     ]
 
     // package.json is internally consistent: dev and peer pins of the plugin API match
@@ -347,9 +353,9 @@ describe("packaging and docs invariants (task 12)", () => {
         expect(content, `${label} row for ${name}@${version}`).toContain(row)
       }
       // prerelease version string agrees
-      expect(content, `${label} prerelease version`).toContain("0.5.0-beta.2")
+      expect(content, `${label} prerelease version`).toContain("0.5.0-beta.3")
     }
-    expect(pkg.version).toBe("0.5.0-beta.2")
+    expect(pkg.version).toBe("0.5.0-beta.3")
   })
 
   test("README documents plural plugins for server and cli.json for TUI", async () => {
@@ -368,14 +374,16 @@ describe("packaging and docs invariants (task 12)", () => {
     }
   })
 
-  test("PINNED_VERSIONS and RELEASE_NOTES carry the Phase 8 tested SHA and no floating tags", async () => {
-    for (const file of ["PINNED_VERSIONS.md", "RELEASE_NOTES_0.5.0-beta.2.md"]) {
+  test("PINNED_VERSIONS and RELEASE_NOTES carry the Phase 9 tested SHA and no floating tags", async () => {
+    // TODO(task-35): add "RELEASE_NOTES_0.5.0-beta.3.md" once task 35 authors
+    // the beta.3 release notes — the file does not exist yet.
+    for (const file of ["PINNED_VERSIONS.md"]) {
       const content = await readFile(join(ROOT, file), "utf8")
 
       expect(content, `${file} tested SHA`).toContain(TESTED_OPENCODE_SHA)
 
       // no `pkg@latest` / `pkg@next` / `pkg@beta` / `pkg@dev` install specifier anywhere
-      // (`0.0.0-dev-17968` is an exact version STRING, not the `dev` dist-tag)
+      // (`0.0.0-dev-18686` is an exact version STRING, not the `dev` dist-tag)
       expect(content, `${file} floating dist-tag`).not.toMatch(/@(latest|next|beta|dev)(?![\w.-])/)
       // and no floating range specifiers for the v2-sensitive deps
       for (const [name] of await v2SensitivePins()) {
