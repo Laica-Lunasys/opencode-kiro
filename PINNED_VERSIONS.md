@@ -1,24 +1,106 @@
 # Pinned Versions — opencode-v2 prerelease
 
-**Package version**: `0.5.0-beta.2`
-**Recorded**: 2026-07-28 (task 02, opencode-v2-migration); re-pinned 2026-07-29 (Phase 4 gate iteration 2); re-pinned 2026-08-23 (Phase 8, task 24)
+**Package version**: `0.5.0-beta.3`
+**Recorded**: 2026-07-28 (task 02, opencode-v2-migration); re-pinned 2026-07-29 (Phase 4 gate iteration 2); re-pinned 2026-08-23 (Phase 8, task 24); re-pinned 2026-08-30 (Phase 9, task 30)
 
-## Exact pins (v2-sensitive dependencies) — CURRENT (Phase 8, 2026-08-23)
+## Exact pins (v2-sensitive dependencies) — CURRENT (Phase 9, 2026-08-30)
+
+| Package | Pinned version | Where |
+|---|---|---|
+| `@opencode-ai/plugin` | `0.0.0-dev-18686` | devDependencies + peerDependencies (exact; dev channel — the live v2 channel) |
+| `@opentui/solid` | `0.5.9` | dependencies (exact; max published, sole version satisfying the new `>=0.5.9` peer floor; bundler-external, never bundled) |
+| `solid-js` | `1.9.12` | dependencies (exact; `@opentui/solid@0.5.9` peers this EXACTLY; bundler-external, never bundled) |
+| `kiro-acp-ai-provider` | `3.0.0` | dependencies (exact, unchanged from v1) |
+
+## Tested OpenCode compatibility target — CURRENT (Phase 9)
+
+| Item | Value |
+|---|---|
+| Tested OpenCode SHA (`upstream/v2` head, 2026-08-29) | `8ba434b5973856b2f32b8cd3543e154b25c413e6` |
+| Prior tested SHA (Phase 8 re-pin, superseded) | `1cf61593b5ec204619b3f679fe418fec10ca5934` |
+| `engines.opencode` | Removed — v2 host has no stable semver; the tested SHA above is the compatibility target |
+
+### Phase 9 re-pin (2026-08-30, task 30) — supersession notes
+
+- Supersedes `@opencode-ai/plugin@0.0.0-dev-17968` + OpenCode SHA `1cf61593b5…`
+  (Phase 8 pins, evidence retained below for audit).
+- **Version correlation**: head `8ba434b5973856b2f32b8cd3543e154b25c413e6` committed
+  2026-08-29T13:31:04Z; `0.0.0-dev-18686` published 2026-08-29T13:43:01Z (~12 min
+  later — the CI build OF that head; `dev-18685` predates the commit, `dev-18687+`
+  are post-head). Pinned by exact version string, never by dist-tag. npm `latest`
+  (1.18.25) remains the stale v1 line; `dev` remains the live v2 channel.
+- **Peer changes at this pin**: @opentui peer floor moved `>=0.5.7` → `>=0.5.9` →
+  `@opentui/solid` bumped `0.5.7` → `0.5.9` (max published; registry query
+  2026-08-30). `@opentui/solid@0.5.9` peers `solid-js@1.9.12` EXACTLY → solid-js
+  pin unchanged. New optional peer version `@opencode-ai/theme@0.0.0-dev-18686`
+  (not installed — optional, host-provided).
+- **THE FIX prerequisite shipped in this package**: the event union carries
+  `credential.updated` + `credential.switched`; `integration.connection.updated`
+  is GONE (upstream `eb1ac54d73`/`62d9aa9838`) — task 31 widens the discovery
+  filter to dual-listen on all three names.
+- **Typecheck window**: typecheck intentionally RED between task 30 and tasks
+  31/32 (event-name + any additive-surface absorption).
+
+## Installed tarball verification evidence (`@opencode-ai/plugin@0.0.0-dev-18686`) — CURRENT
+
+Verified on 2026-08-30 (task 30 gate) against a hermetic temp-dir
+`npm install --ignore-scripts` AND re-confirmed on the in-repo
+`node_modules/@opencode-ai/plugin` after the re-pin install:
+
+1. **Version**: installed `package.json` reports exactly `0.0.0-dev-18686`.
+2. **Exports map** (v2 layout — PASS): `.` → `./dist/promise/index.js`,
+   `./effect` → `./dist/effect/index.js`, `./tui` → `./dist/tui/index.js`, plus a
+   `./*` → `./dist/*.js` wildcard. `./v1` is **GONE**; stale `./v2/promise`
+   layout ABSENT.
+3. **TUI claims API** (PASS): `dist/tui/context.d.ts:160` `export type SlotPath =
+   keyof SlotMap`; `:180` `export type SlotClaim<Path extends SlotPath …>`;
+   `:405` `readonly slot: (claim: SlotClaim) => () => void`. `SlotMap` includes
+   our two claim paths: `"prompt.footer.status"` (`:148`) and
+   `"sidebar.content"` (`:153`, props `{ sessionID: string }`);
+   `"session.composer.top"` (`:150`) still present.
+4. **Integration forms API** (PASS): `dist/promise/integration.d.ts:14`/`:25`
+   `readonly form?: Form.Fields`; `:46` `authorize: (answer: Form.Answer) =>
+   Promise<IntegrationOAuthAuthorization>`; `:32-33`
+   `IntegrationOAuthAuthorization = { readonly url: string; … }`. No
+   `prompt`/`prompts` occurrence anywhere in `integration.d.ts`.
+5. **Server plugin TUI auto-load flag** (PASS): `dist/promise/plugin.d.ts:52`
+   `readonly tui?: boolean;`.
+6. **Credential event rename — THE FIX prerequisite** (PASS):
+   - `@opencode-ai/schema/dist/event-manifest.d.ts:44` `type:
+     Schema.Literal<"credential.updated">` with `data: Schema.Struct<{}>`
+     (EMPTY payload — always re-check `connection.active`); `:76`
+     `Schema.Literal<"credential.switched">` with `data: Schema.Struct<{
+     integrationID: Integration.ID, credentialID: NullOr<Credential.ID> }>`
+     (Kiro-scopable; credentialID is NULLABLE).
+   - Client event union: `@opencode-ai/client/dist/promise/generated/types.d.ts:1401`
+     `type: "credential.updated"`, `:1411` `type: "credential.switched"`.
+   - `integration.connection.updated` is **ABSENT** from every installed
+     `@opencode-ai/*` dist (recursive grep, zero hits) — the rename shipped in
+     this package.
+7. **Credential.OAuth / OAuth attempt** (PASS, one benign type widening):
+   `@opencode-ai/schema/dist/credential.d.ts:162-169` `OAuth = { type:"oauth",
+   methodID, refresh, access, expires, metadata? }` — `expires` is now
+   `Schema.Int` (was NonNegativeInt); `expires: 0` remains valid, no code
+   impact. `IntegrationOAuthAuthorization.url` is plain `string`.
+8. **Peer ranges** (PASS, floor moved): `@opentui/core >=0.5.9`,
+   `@opentui/solid >=0.5.9`, `solid-js >=1.9.0`, `@opencode-ai/theme
+   0.0.0-dev-18686` (all optional).
+9. **@opentui/solid selection**: published versions end at `0.5.9` (registry
+   query 2026-08-30) — only `0.5.9` satisfies `>=0.5.9`; its
+   `peerDependencies` are exactly `{ "solid-js": "1.9.12" }` → both pinned
+   exact. In-repo `npm ls @opencode-ai/plugin @opentui/solid solid-js` resolves
+   clean with solid-js fully deduped to a single `1.9.12` instance.
+
+## Exact pins — Phase 8 record (superseded 2026-08-30 by the Phase 9 re-pin above)
 
 | Package | Pinned version | Where |
 |---|---|---|
 | `@opencode-ai/plugin` | `0.0.0-dev-17968` | devDependencies + peerDependencies (exact; dev channel — the live v2 channel) |
-| `@opentui/solid` | `0.5.7` | dependencies (exact; max published, sole version satisfying the new `>=0.5.7` peer floor; bundler-external, never bundled) |
+| `@opentui/solid` | `0.5.7` | dependencies (exact; max published at the time, sole version satisfying the `>=0.5.7` peer floor; bundler-external, never bundled) |
 | `solid-js` | `1.9.12` | dependencies (exact; `@opentui/solid@0.5.7` peers this EXACTLY; bundler-external, never bundled) |
 | `kiro-acp-ai-provider` | `3.0.0` | dependencies (exact, unchanged from v1) |
 
-## Tested OpenCode compatibility target — CURRENT (Phase 8)
-
-| Item | Value |
-|---|---|
-| Tested OpenCode SHA (`upstream/v2` head, 2026-08-23) | `1cf61593b5ec204619b3f679fe418fec10ca5934` |
-| Prior tested SHA (Phase 4 re-pin, superseded) | `b47cfbee7c4fd24e5d73e5753b4755db62a92a63` |
-| `engines.opencode` | Removed — v2 host has no stable semver; the tested SHA above is the compatibility target |
+## Tested OpenCode compatibility target — Phase 8 record (superseded)
 
 ### Phase 8 re-pin (2026-08-23, task 24) — supersession notes
 
@@ -38,7 +120,7 @@
   `Form.Fields`/`Form.Answer`; `session.composer.top` slot REVIVED under the
   claims system.
 
-## Installed tarball verification evidence (`@opencode-ai/plugin@0.0.0-dev-17968`) — CURRENT
+## Installed tarball verification evidence (`@opencode-ai/plugin@0.0.0-dev-17968`, superseded)
 
 Verified on 2026-08-23 (task 24 gate) against a hermetic temp-dir
 `npm install --ignore-scripts` AND re-confirmed on the in-repo

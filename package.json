@@ -1,6 +1,6 @@
 {
   "name": "opencode-kiro",
-  "version": "0.5.0-beta.2",
+  "version": "0.5.0-beta.3",
   "description": "The ACP-compliant Kiro plugin for opencode: auth via the official kiro-cli login, the live Kiro model lineup through the Agent Client Protocol, and TUI credits display",
   "license": "MIT",
   "author": "Nacho F. Lizaur (https://github.com/NachoFLizaur)",
@@ -39,15 +39,15 @@
     "node": ">=20"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "0.0.0-dev-17968"
+    "@opencode-ai/plugin": "0.0.0-dev-18686"
   },
   "dependencies": {
-    "@opentui/solid": "0.5.7",
+    "@opentui/solid": "0.5.9",
     "kiro-acp-ai-provider": "3.0.0",
     "solid-js": "1.9.12"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "0.0.0-dev-17968",
+    "@opencode-ai/plugin": "0.0.0-dev-18686",
     "@types/node": "^20.19.42",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",
