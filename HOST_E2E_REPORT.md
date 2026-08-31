@@ -498,3 +498,91 @@ green (proven via registry-layout seeding).
 - Prompt/session API shape unchanged from `b47cfbee7c` (`POST /api/session`
   takes `model` incl. `variant`; `POST /api/session/:id/prompt {text}`); Basic
   auth + `{location,data}` envelope unchanged.
+
+## Beta.3 e2e at 8ba434b597
+
+**Task**: opencode-v2-migration-34 — host e2e of the beta.3 candidate at the Phase 9 pin; **headline: THE FIX VALIDATION** (dual-listen credential events, task 31)
+**Plugin SHA under test**: `b5d7d13` (branch `opencode-v2`, clean; 102/102 targeted green)
+**Host SHA**: `8ba434b5973856b2f32b8cd3543e154b25c413e6` (`upstream/v2` head 2026-08-29; Phase 9 pin)
+**Pinned plugin API**: `@opencode-ai/plugin@0.0.0-dev-18686`
+**Date**: 2026-08-30
+**Method**: detached read-only `git worktree` of the reference clone at the pinned SHA (SHA object already local — no fetch needed); hermetic XDG (config/data/cache/state) + `OPENCODE_CONFIG_PROJECT_DISABLE=1`; real HOME kept for kiro-cli (2.20.1); fresh `npm pack` tarball; **colon-free registry-layout seed** (B4 avoidance): tarball npm-installed into `$XDG_CACHE_HOME/opencode/packages/opencode-kiro@0.5.0-beta.3/` (with a seed-root `package.json` so npm anchors there — it otherwise walks UP to a parent package root), config = ONE entry `{"plugins":["opencode-kiro@0.5.0-beta.3"]}`; `OPENCODE_MODELS_PATH=<models.dev>/.artifacts/api.json` (July artifact reused); `serve --port 44301` (Basic auth); SSE `/api/event` captured for the whole fix sequence; `script(1)` pty 220x60 + pyte replay for TUI rows; per-command timeouts; pre-existing orphans ignored/untouched.
+
+### Checklist results (beta.3)
+
+| # | Item | Result | Evidence |
+|---|------|--------|----------|
+| F-1 | Worktree at exact SHA; host builds/boots (bun version noted) | PASS | `git worktree add --detach <tmp> 8ba434b597…` → `rev-parse HEAD` = `8ba434b5973856b2f32b8cd3543e154b25c413e6`; clone stayed on `feat/kiro-provider` @ `3a68247163`, porcelain EMPTY (0 bytes) before the run. **Repo pins `packageManager: bun@1.3.14`** — local bun 1.3.14 matches exactly. `bun install` 4829 packages in 17.6 s (warm cache); `bun run dev --help` → "OpenCode 2.0 preview command line interface". |
+| F-2 | Fresh pack (0.5.0-beta.3); hermetic single-config install (`tui: true` auto-load) | PASS | Fresh `npm run build` + `npm pack` at `b5d7d13` → `opencode-kiro-0.5.0-beta.3.tgz` (10 files, 13.7 kB, shasum `9e3020c23242d2e53b70547bb9a781122cbb171b`). Registry-layout seed (colon-free — `sanitize()` in `packages/util/src/npm.ts:38` is STILL win32-only, so B4 stands for `file:` installs; install base = `$XDG_CACHE_HOME/opencode/packages/<spec>`, short-circuit on existing `node_modules/<name>` confirmed at `npm.ts:180`). Hermetic config tree = exactly ONE file (`opencode.json`, single server `plugins` entry; NO cli.json anywhere). `GET /api/plugin` → **80 plugins incl. `{"id":"kiro","source":{"type":"package","package":"opencode-kiro@0.5.0-beta.3"},"status":"active","tui":true}`** ~10 s after boot. beta.3 is UNPUBLISHED — resolution can only have come from the seeded layout. |
+| F-3 | **THE FIX — mid-session connect: models appear WITHOUT restart** | **PASS** | Server (PID 71290) started LOGGED OUT: `GET /api/model` → 116 total, **0 kiro**; `GET /api/integration/kiro` → `connections: []` (method `kiro-cli-login` present). SSE `/api/event` capture opened. Mid-session `POST …/connect/oauth {methodID:"kiro-cli-login"}` → `complete` ("Already authenticated with Kiro CLI."), credential `cred_0529f9e6d0012YH412GKjV3Mlx` stored. **Same server process, NO restart: `GET /api/model` → 134 total, 18 kiro models** (display names + variants present). **Events that drove the re-check (SSE capture)**: `{"type":"credential.updated","data":{}}` (evt_0529f9e72001…) + `{"type":"credential.switched","data":{"integrationID":"kiro","credentialID":"cred_0529f9e6d001…"}}` (evt_0529f9e78001…), 6 ms apart; **0 occurrences of `integration.connection.updated` in the whole capture** — the dual-listen migration is doing ALL the work on this host. (Auth preamble: kiro-cli's own token had expired; the first connect attempt correctly went `mode:"auto"` pending, spawned `kiro-cli login`, and FAILED after the ~120 s poll — an out-of-band pty `kiro-cli login --license pro --identity-provider … --region eu-west-1` + USER browser completion restored CLI auth; the server was NOT restarted at any point.) |
+| F-4 | **THE FIX — logout: models clear WITHOUT restart** | **PASS** | `DELETE /api/credential/cred_0529f9e6d001…` → 204. Same server, ~4 s later: `connections: []`, `GET /api/model` → 116 total, **0 kiro** (exactly −18). SSE: removal published `{"type":"credential.updated","data":{}}` + `{"type":"credential.switched","data":{"integrationID":"kiro","credentialID":null}}` (active-credential removal publishes both, per `credential.ts:222-228`). |
+| F-5 | Multi-account sanity (`credential.switched` with a REAL switch) | PASS | Two consecutive connects → TWO credentials (`Kiro`, `Kiro 2` — host auto-labels). `POST /api/credential/<older>/activate` → 204; SSE fired `credential.switched {"integrationID":"kiro","credentialID":"cred_052a0dfb3001…"}` (a genuine switch to a non-newest credential); kiro models stayed **18** throughout. Extra credential removed after; 1 connection left for the remaining rows. |
+| F-6 | 18 enriched models via OPENCODE_MODELS_PATH (enrichment, not fallback) | PASS | July artifact REUSED (not rejected at this SHA). 18 kiro models with models.dev display names ("Claude Sonnet 5", "GPT-5.6 Sol"…) + artifact context windows (`claude-sonnet-5` ctx 1,000,000 / `gpt-5.6-sol` 272,000 — fallback would show `name===id`, ctx 0). Effort models carry variants → `settings.effort` (`claude-sonnet-5`: low/medium/high/xhigh/max). `settings.contextWindows` passthrough (18 entries) + `{cwd, agent:"opencode", trustAllTools:true, mcpTimeout:45}` on the wire settings. Intersection note: runtime model set at kiro-cli 2.20.1 changed (new `glm-5`, `minimax-m2.5`, `qwen3-coder-next`, `deepseek-3.2`…); catalog ∩ runtime still = **18**. |
+| F-7 | Effort on the wire (ACP stdin capture) | PASS | PATH-shim `kiro-cli` teeing ACP stdin (per-instance tee files); server relaunched with shimmed PATH (port 44302; stored credential persisted in the hermetic data dir → 18 models in 5 s). Session `{"providerID":"kiro","id":"claude-sonnet-5","variant":"high"}` + text prompt → wire capture (main client): `{"command":"effort","args":{"value":"high"}}` via `_kiro.dev/commands/execute`; ephemeral client captured `effort:"none"` (same informational behavior as beta.2). THREE owned ACP instances (warmup/discovery + ephemeral + main; 3 non-empty tee files), all children of the server. Turn `finish:"stop"`, assistant recorded `variant:"high"` + durable `content[].state = {credits:0.08865,creditsUnit:"credit"}` + message-level `providerState` mirror `{contextUsagePercentage, turnDurationMs, credits, creditsUnit}`. |
+| F-8 | Credits chip (footer row) + box live on a text turn; durable across restart; no double-count | PASS | pty via `script(1)` + `stty cols 220 rows 60` + pyte replay. **Durable (fresh mounts, transient store necessarily empty)**: TUI mount painted footer chip `0.09 credits` (= durable 0.08865) on the prompt footer row beside the host path/context display, AND sidebar box `Kiro` / `0.09 credits` alongside built-ins (`2% used`). **Live**: prompt fired while attached → BOTH surfaces updated in place to **`0.18 credits`** = exact new durable Σ 0.18259 (2 credit parts — never doubled); transcript live-painted. **Durable across restart**: third fresh TUI mount painted exactly `0.18` on both surfaces. 0 occurrences of `crashed`/`No renderer found` across all three raw captures. (80-col note: at narrow width the sidebar is hidden by the host layout; the footer chip still renders — captured at both widths.) |
+| F-9 | `-kiro` disable kills both halves | PASS | Config `{"plugins":["opencode-kiro@0.5.0-beta.3","-kiro"]}` + **FRESH data dir** (residue gotcha honored): `GET /api/plugin` → **79** plugins (was 80), `kiro` ABSENT; **0** kiro models; kiro integration reduced to catalog-generic `[key, env]` methods (plugin-owned "Kiro CLI Login" gone). TUI boot on the same host: **0** occurrences of `kiro`/`credits` in the raw capture, 0 `crashed`, host renders normally — one directive still kills BOTH halves (auto-load only picks `status:"active"` package entries from plugin.list). Config/data restored (hermetic temp). |
+| F-10 | Teardown: no run-owned processes; worktree removed; clone byte-identical | PASS | All 3 servers (ports 44301-44303), all TUI/`script(1)` pairs, the pty login wrapper, shim tees, and ACP children terminated — post-run `ps`: ZERO run-owned processes. `git worktree remove --force` + `prune` → e2e worktree gone; remaining worktrees = main clone + `opencode-bundled` + `opencode-stock` + `opencode-v2-kiro`, all untouched. Clone: `feat/kiro-provider` @ `3a68247163`, `git status --porcelain` EMPTY before AND after (byte-identical); no fetch performed (pin SHA already local). models.dev repo untouched (artifact read-only). All e2e state (worktree, hermetic XDG, tarball, captures, shim) lived under the pre-approved temp root. Note: kiro-acp wrote `.kiro/agents/opencode-*.json` under the session cwd DURING turns — that cwd was inside the temp worktree (removed); the reference clone is unaffected. |
+
+### VERDICT (beta.3)
+
+**BETA.3 E2E VERIFIED — THE FIX VALIDATED END-TO-END.** All 10 rows PASS. The
+headline holds live: a host started LOGGED OUT shows 0 kiro models; a
+mid-session Kiro CLI Login makes **18 models appear on the same server process
+with NO restart**, and the SSE capture proves the reactivity came from
+**`credential.updated` (empty payload) + `credential.switched`
+(`{integrationID:"kiro", credentialID:…}`)** — with **ZERO occurrences of
+`integration.connection.updated`** anywhere in the run, confirming both the
+Phase 9 defect premise (old event name is dead on new hosts) and the dual-listen
+fix (task 31) as the sole reactivity driver. Logout (`DELETE
+/api/credential/:id`) cleared the 18 models without restart (removal publishes
+`credential.updated` + `credential.switched {credentialID:null}` when the active
+credential goes). Multi-account got a real sanity pass: two stored credentials
+(host auto-labels "Kiro" / "Kiro 2"), activating the older one fired a genuine
+`credential.switched` and models stayed 18. All standard rows held: `tui: true`
+single-config auto-load, OPENCODE_MODELS_PATH enrichment (July artifact still
+accepted; 18 enriched models), effort `high` on the ACP wire, footer chip + 
+sidebar box live AND durable across three fresh mounts with exact never-doubled
+sums, `-kiro` killing both halves, clean teardown with a byte-identical clone.
+
+### Upstream deviations noticed at `8ba434b597` (vs `1cf61593b5`)
+
+- **Credential events REPLACE `integration.connection.updated` (THE Phase 9
+  premise, now proven live)**: `Credential.create` publishes BOTH
+  `credential.updated {}` and `credential.switched {integrationID,
+  credentialID}` (6 ms apart in our capture); `remove` publishes
+  `credential.updated` (+ `credential.switched {credentialID:null}` when the
+  active credential is removed — `packages/core/src/credential.ts:222-228`);
+  `activate` publishes only `credential.switched`. The old event name appeared
+  0 times in the full SSE capture.
+- **Multi-account credential UX**: repeated connects create ADDITIONAL
+  credentials (auto-labeled "Kiro", "Kiro 2" — beta.2 stored label was
+  "default"); `POST /api/credential/:id/activate` switches;
+  `DELETE /api/credential/:id` is the logout path (there is no
+  integration-level disconnect route anymore).
+- **Failed-login attempt semantics**: with kiro-cli's own token expired, the
+  connect attempt went `pending` (spawned `kiro-cli login`, no tty) and cleanly
+  transitioned to `failed` after the ~120 s poll window — no crash, no stuck
+  attempt; a later connect on the same server succeeded normally.
+- **Plugins-before-generation (`1e7c60adce`) — observed good**: prompts issued
+  seconds after boot round-tripped cleanly (`finish:"stop"` first try, all
+  servers); no first-turn raciness anywhere in the run. Plugin registry
+  populated in ~5-10 s warm (vs the 30-60 s cold-lazy note from beta.2).
+- **Plugin count 80** at this SHA (beta.2: 81) — host built-in set churn only.
+- **B4 status re-checked in source (not behaviorally this run)**: `sanitize()`
+  in `packages/util/src/npm.ts:38` is still win32-only, so `name@file:` install
+  dirnames still carry `:` on darwin; this run used the colon-free
+  registry-layout seed exclusively (install base `$XDG_CACHE_HOME/opencode/
+  packages/<spec>`; short-circuit on existing `node_modules/<name>` at
+  `npm.ts:180` confirmed — beta.3 is unpublished, so resolution can only have
+  come from the seed).
+- **Runtime model set moved with kiro-cli 2.20.1**: new runtime IDs (`glm-5`,
+  `minimax-m2.5`, `qwen3-coder-next`, `deepseek-3.2`, …); catalog ∩ runtime is
+  still exactly **18** with the July models.dev artifact.
+- **Harness footnote (not upstream)**: npm walks UP to the nearest package root
+  when the target dir has no `package.json` — seeding the registry layout needs
+  a stub `package.json` in the seed dir first (a scratch package root under the
+  temp tree absorbed one stray install before this was added; no repo touched).
+- Session/prompt API shape unchanged (`POST /api/session` takes `model` incl.
+  `variant`; `POST /api/session/:id/prompt {text}`); Basic auth +
+  `{location,data}` envelope unchanged; assistant `providerState` mirror
+  unchanged.

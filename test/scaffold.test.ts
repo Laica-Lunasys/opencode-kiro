@@ -332,25 +332,49 @@ describe("packaging and docs invariants (task 12)", () => {
     expect(paths.some((path) => path === "dist/tui.d.ts")).toBe(true)
   }, 60_000)
 
-  test("pins consistent across package.json / PINNED_VERSIONS / RELEASE_NOTES", async () => {
+  test("pins consistent across package.json / PINNED_VERSIONS / RELEASE_NOTES / README", async () => {
     const pkg = await readPkg()
     const pins = await v2SensitivePins()
-    // TODO(task-35): add ["RELEASE_NOTES_0.5.0-beta.3.md", ...] once task 35
-    // authors the beta.3 release notes — the file does not exist yet.
-    const docs: Array<[label: string, content: string]> = [
-      ["PINNED_VERSIONS.md", await readFile(join(ROOT, "PINNED_VERSIONS.md"), "utf8")],
+    // `fullPinTable: true` docs must mirror EVERY v2-sensitive pin row; README
+    // deliberately carries only the plugin-API pin + package version + tested SHA
+    // (it defers the full table to PINNED_VERSIONS.md), so it is locked on exactly
+    // those strings — enough to fail the suite on a stale README pin.
+    const docs: Array<{ label: string; content: string; fullPinTable: boolean }> = [
+      {
+        label: "PINNED_VERSIONS.md",
+        content: await readFile(join(ROOT, "PINNED_VERSIONS.md"), "utf8"),
+        fullPinTable: true,
+      },
+      {
+        label: "RELEASE_NOTES_0.5.0-beta.3.md",
+        content: await readFile(join(ROOT, "RELEASE_NOTES_0.5.0-beta.3.md"), "utf8"),
+        fullPinTable: true,
+      },
+      { label: "README.md", content: await readFile(join(ROOT, "README.md"), "utf8"), fullPinTable: false },
     ]
 
     // package.json is internally consistent: dev and peer pins of the plugin API match
     expect(pkg.devDependencies?.["@opencode-ai/plugin"]).toBe(pkg.peerDependencies?.["@opencode-ai/plugin"])
 
-    // each doc's pin-table row must carry EXACTLY the package.json specifier;
-    // any drift in either direction breaks the row match
-    for (const [label, content] of docs) {
-      for (const [name, version] of pins) {
-        expect(version, `${name} must be pinned in package.json`).not.toBe("")
-        const row = `| \`${name}\` | \`${version}\` |`
-        expect(content, `${label} row for ${name}@${version}`).toContain(row)
+    for (const [name, version] of pins) {
+      expect(version, `${name} must be pinned in package.json`).not.toBe("")
+    }
+
+    for (const { label, content, fullPinTable } of docs) {
+      if (fullPinTable) {
+        // each doc's pin-table row must carry EXACTLY the package.json specifier;
+        // any drift in either direction breaks the row match
+        for (const [name, version] of pins) {
+          const row = `| \`${name}\` | \`${version}\` |`
+          expect(content, `${label} row for ${name}@${version}`).toContain(row)
+        }
+      } else {
+        // scoped lock: plugin-API pin row (trailing cell text is free-form) + tested SHA
+        const pluginPin = pkg.devDependencies?.["@opencode-ai/plugin"] ?? ""
+        expect(content, `${label} row for @opencode-ai/plugin@${pluginPin}`).toContain(
+          `| \`@opencode-ai/plugin\` | \`${pluginPin}\``,
+        )
+        expect(content, `${label} tested SHA`).toContain(TESTED_OPENCODE_SHA)
       }
       // prerelease version string agrees
       expect(content, `${label} prerelease version`).toContain("0.5.0-beta.3")
@@ -375,9 +399,7 @@ describe("packaging and docs invariants (task 12)", () => {
   })
 
   test("PINNED_VERSIONS and RELEASE_NOTES carry the Phase 9 tested SHA and no floating tags", async () => {
-    // TODO(task-35): add "RELEASE_NOTES_0.5.0-beta.3.md" once task 35 authors
-    // the beta.3 release notes — the file does not exist yet.
-    for (const file of ["PINNED_VERSIONS.md"]) {
+    for (const file of ["PINNED_VERSIONS.md", "RELEASE_NOTES_0.5.0-beta.3.md"]) {
       const content = await readFile(join(ROOT, file), "utf8")
 
       expect(content, `${file} tested SHA`).toContain(TESTED_OPENCODE_SHA)

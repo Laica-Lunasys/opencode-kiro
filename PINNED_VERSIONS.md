@@ -448,3 +448,135 @@ runtime-loaded plugin code to the HOST's module instances (catalog `solid-js@1.9
 / `@opentui/solid@0.5.7`), so the plugin's nested copies are never dual-instanced
 into the TUI. `packages/core` `bun run typecheck` (tsgo) passed clean. Branch remains
 an UNPUSHED PR candidate; no binaries rebuilt.
+
+## Host validation evidence — beta.3 candidate (recorded by task 34, `opencode-v2` @ `b5d7d13`, 2026-08-30)
+
+Full host e2e at the Phase 9 pin — **BETA.3 E2E VERIFIED, THE FIX VALIDATED
+END-TO-END** (all 10 checklist rows PASS); evidence in `HOST_E2E_REPORT.md` →
+"Beta.3 e2e at 8ba434b597".
+
+- **OpenCode SHA re-confirmed at test time**: `8ba434b5973856b2f32b8cd3543e154b25c413e6`
+  (detached read-only worktree; `rev-parse HEAD` matched the pin exactly; clone
+  stayed on `feat/kiro-provider` @ `3a68247163` with empty porcelain before AND
+  after; worktree removed + pruned; no fetch needed — SHA already local). Host
+  repo pins `packageManager: bun@1.3.14` at this SHA; bun 1.3.14 used.
+- **Artifact under test**: `opencode-kiro-0.5.0-beta.3.tgz` (fresh `npm pack` at
+  `b5d7d13`: 10 files, 13.7 kB, shasum `9e3020c23242d2e53b70547bb9a781122cbb171b`).
+  Compare this against `dist.shasum` after the USER publishes.
+- **THE FIX (task 31 dual-listen) verified live**: host started LOGGED OUT →
+  0 kiro models; mid-session Kiro CLI Login → **18 models on the SAME server
+  process, no restart**; logout (`DELETE /api/credential/:id`) → models cleared,
+  no restart. SSE capture: reactivity driven by `credential.updated {}` +
+  `credential.switched {integrationID:"kiro", credentialID:…}`;
+  **`integration.connection.updated` fired 0 times in the entire run** — the
+  old name is dead on new hosts exactly as diagnosed; dual-listen is the sole
+  working path.
+- **Multi-account sanity**: two stored credentials via repeated connects
+  (host auto-labels "Kiro"/"Kiro 2"); activating the older fired a genuine
+  `credential.switched`; models stayed 18 throughout.
+- **Standard rows all held**: `tui: true` single-config auto-load (80 plugins,
+  kiro `status:"active"`, `tui:true`, colon-free registry-layout seed —
+  beta.3 unpublished, so resolution provably came from the seed);
+  OPENCODE_MODELS_PATH enrichment with the July artifact (18 enriched models;
+  runtime set moved at kiro-cli 2.20.1, intersection still 18); effort `high`
+  on the main ACP client's stdin; footer chip + sidebar box live (0.09 → 0.18
+  = exact durable sums) and durable across three fresh TUI mounts, never
+  double-counted; one `-kiro` directive killed both halves on a fresh data dir;
+  teardown clean (zero run-owned processes; clone byte-identical).
+- **Plugins-before-generation (`1e7c60adce`)**: no first-turn raciness observed;
+  prompts seconds after boot completed `finish:"stop"` first try.
+
+## Pre-publish record — 0.5.0-beta.3 release candidate (task 35, 2026-08-30)
+
+- **Pre-flight pack at the release tree** (beta.3 docs + release notes + doc-sweep
+  locks staged): `npm pack --dry-run` → `opencode-kiro-0.5.0-beta.3.tgz`, 10 files,
+  package size 13.8 kB (unpacked 41.6 kB), dist-only payload (dist/* + package.json
+  + README.md + LICENSE), shasum `73addec202d9ee6949396e7548a9a92f96da6d94`. This
+  SUPERSEDES the task-34 candidate shasum `9e3020c23242d2e53b70547bb9a781122cbb171b`
+  (packed at `b5d7d13`, before the beta.3 docs landed in README.md). Compare THIS
+  shasum against registry `dist.shasum` after the USER publishes.
+- **Doc sweep**: README bumped to `0.5.0-beta.3` (tested SHA `8ba434b597…`, plugin
+  pin `0.0.0-dev-18686`) + new pin warning (the host background-auto-refreshes
+  UNPINNED npm plugin packages — always use the exact spec);
+  `RELEASE_NOTES_0.5.0-beta.3.md` created (dual-listen credential-event fix +
+  re-pin; supersedes the beta.2 note); pins-consistency locks extended to the
+  beta.3 release notes and green (scaffold 21/21 + typecheck clean).
+- **Publish handoff**: `npm whoami` returned 401 Unauthorized at pre-flight — the
+  USER must authenticate (`npm login`) before running `npm publish --tag beta` from
+  `opencode-v2`. The agent never publishes; the ACTUAL dist-tag used is recorded
+  here post-publish.
+- **Wiring-branch rebase (opencode worktree `opencode-v2-kiro`)**: new branch
+  `feat/kiro-provider-v2-repin2` @ `895dc1a6ad` created at base
+  `8ba434b5973856b2f32b8cd3543e154b25c413e6` (`git checkout -B` at the pin; prior
+  branches kept: `feat/kiro-provider-v2-repin` @ `a655467972`,
+  `feat/kiro-provider-v2` @ `b5177147cc`) — SERVER-ONLY built-in wiring re-applied
+  via cherry-pick of `dd78215940` (core dep `opencode-kiro` `0.5.0-beta.3` exact,
+  `internal.ts` `pre` append via `PluginPromise.fromPromise` after
+  `WarmingPlugin.Plugin`, bunfig age-gate excludes appended to the CURRENT list,
+  root `@opencode-ai/plugin` `workspace:*` override). Expected mechanical
+  `internal.ts` conflict resolved additively against the pre-array churn
+  (`McpCodeModeExclusionPlugin` rename kept, VcsGit/VcsHg + PlanPlugin-moved-pre
+  kept; our +2 imports / +1 array append only; +6/−1 across 4 files).
+  `bun install` deferred to post-publish (registry package required). UNPUSHED
+  candidate; no PR. Main opencode clone untouched (empty porcelain before/after,
+  still on `feat/kiro-provider` @ `3a68247163`).
+
+## Post-publish completion — 0.5.0-beta.3 live + wiring install (task 35, 2026-08-31)
+
+`opencode-kiro@0.5.0-beta.3` is LIVE on the registry, **published by the USER**
+(`npm publish --tag beta`; the agent never publishes) at
+`2026-08-30T20:46:53.085Z`.
+
+- **Artifact identity VERIFIED**: registry `dist.shasum`
+  `73addec202d9ee6949396e7548a9a92f96da6d94` — an EXACT match to the task-35
+  pre-flight pack shasum recorded above, so the published tarball is
+  byte-identical to the audited release tree. Registry `dist.integrity`
+  `sha512-ACy31NSOiq7B8vsrgoPgvJhoRKbqz8eugwLAB05Kko5ddejWAkhB2Vp8a3rzUtf1L0b77FHsRxdYtIpPqlpDPA==`.
+- **Dist-tags state**: `beta` → `0.5.0-beta.3` (moved off beta.2 as intended);
+  **`latest` UNTOUCHED at `0.4.0`** and `next` untouched at `0.3.6-rc.1` — the
+  beta release is opt-in only, plain `npm i opencode-kiro` still gets 0.4.0.
+- **Wiring-worktree install** (`opencode-v2-kiro`, `feat/kiro-provider-v2-repin2`,
+  base `8ba434b5973856b2f32b8cd3543e154b25c413e6`, bun 1.3.14 = repo
+  `packageManager`): `bun install` succeeded with **no age-gate error** (the
+  bunfig `minimumReleaseAgeExcludes` entries for `opencode-kiro` +
+  `kiro-acp-ai-provider` are effective — both were published well inside the
+  3-day `minimumReleaseAge` window). `bun.lock` resolves
+  `opencode-kiro@0.5.0-beta.3` from the registry with integrity **matching
+  `npm view dist.integrity` exactly**, plus its dep
+  `kiro-acp-ai-provider@3.0.0`. `packages/core/node_modules/opencode-kiro`
+  symlinks to the store entry; installed `package.json` reports
+  `0.5.0-beta.3`. Lockfile committed as `add9127f88`
+  (`chore(core): lock opencode-kiro 0.5.0-beta.3 from registry (post-publish install)`).
+- **Server-only wiring sanity (re-confirmed at beta.3)**: the published
+  `dist/server.js` (13.8 kB, 433 lines) contains **zero static imports, zero
+  chunk references, and zero `solid`/`opentui` specifiers** — its only module
+  references are the two dynamic `import("child_process")` and
+  `import("kiro-acp-ai-provider")` calls. The server built-in therefore pulls no
+  UI runtime into the host server process.
+- **Dedupe re-check (solid override still absent)**: `packages/core/node_modules`
+  gains no `solid-js`/`@opentui` entries at all; the plugin's own
+  `solid-js@1.9.12` and `@opentui/solid@0.5.9` land only in bun's isolated store
+  as siblings of the `opencode-kiro@0.5.0-beta.3` entry, never on core's
+  resolution path — same benign placement as beta.2, and still safe for the
+  `tui: true` auto-load path via the host's `@opentui/solid`
+  `ensureRuntimePluginSupport` specifier-rewrite shim.
+- **Lockfile churn beyond our dep — ROOT-CAUSED, benign**: the commit also drops
+  three nested `effect@4.0.0-rc.111` alias entries
+  (`@standard-community/standard-json/effect`,
+  `@standard-community/standard-openapi/effect`,
+  `@brendonovich/vite-plugin-opencode/@opencode-ai/client/effect`), which now
+  resolve to the repo's existing hoisted `effect@4.0.0-rc.112`. This is **not
+  host drift and not caused by the `opencode-kiro` dep**: a clean `bun install`
+  in a throwaway detached worktree at the untouched base SHA produced a
+  **zero-line** lockfile diff, and re-running it with ONLY our
+  `@opencode-ai/plugin: "workspace:*"` root override added reproduced exactly
+  these three removals. That install reported `no changes` across 2957 packages,
+  i.e. the pruning is **lockfile bookkeeping with no physical install delta** —
+  the override makes bun re-resolve and collapse redundant nested aliases. Probe
+  worktree removed + pruned afterwards.
+- **Validation**: `packages/core` `bun run typecheck` (tsgo `-b tsconfig.json
+  tsconfig.tests.json`) exit 0, clean. No tests run (none in scope for this
+  task); no binaries rebuilt.
+- **Tree state**: both repos clean post-commit; main opencode clone porcelain
+  empty, still `feat/kiro-provider` @ `3a68247163`. Wiring branch remains an
+  UNPUSHED PR candidate — NO push, NO PR.
