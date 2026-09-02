@@ -215,8 +215,13 @@ const tmpDirs: string[] = []
  * callbacks and the sdk hook callback, exposes controllable connection state,
  * a spied reload, a controllable event stream, and per-registration disposer
  * spies. `integration.list()` yields a hermetic temp directory location.
+ *
+ * `options` is ABSENT by default (the key is not even present) — that absence
+ * is the witness for the `context.options ?? {}` guard in src/server.ts, so
+ * every pre-existing test keeps exercising it. Item 6 tests opt in via
+ * `makeMockContext({ options: {...} })`.
  */
-function makeMockContext() {
+function makeMockContext(init: { options?: Record<string, unknown> } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "kiro-v2-test-"))
   tmpDirs.push(directory)
 
@@ -272,6 +277,8 @@ function makeMockContext() {
       }),
     },
     event: { subscribe: vi.fn(() => events.iterable) },
+    // present ONLY when a test opts in — see the docblock above
+    ...(init.options !== undefined ? { options: init.options } : {}),
   }
 
   return {
@@ -1432,6 +1439,129 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
     }
     // positive witness that the flow actually ran
     expect(owned.languageModel).toHaveBeenCalledWith("m", { effort: "high" })
+
+    await cleanup()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// beta.4 Item 6: plugin options `agent` / `mcpTimeout` / `discover`
+// ---------------------------------------------------------------------------
+
+// New behavior locks for Item 6 (Req 9). Rationale:
+// - `Plugin.Context.options` is typed present (dist/promise/plugin.d.ts:26) but
+//   BOTH v2 mock contexts omit it and older hosts may too, so src/server.ts
+//   reads `context.options ?? {}`. `makeMockContext()` without an `options`
+//   key IS the guard witness — the default-path test below must never opt in.
+// - Exactly three options, type-checked at runtime with silent fallback to the
+//   defaults (`agent: "opencode"`, `mcpTimeout: 45`, `discover: true`);
+//   `trustAllTools` stays hardcoded and there is deliberately NO `cwd` option
+//   (per-location `integration.list().location.directory` wins).
+// - `discover: false` gates ONLY the setup-time kick-off; the credential-event
+//   path must stay live so a later login still discovers models.
+describe("plugin options (item 6)", () => {
+  /** connected setup + one runtime model + a rich catalog draft → provider record */
+  async function setupAndTransform(h: Harness) {
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([runtime("claude-sonnet-4.6")])
+    const cleanup = await runSetup(h)
+    await flush()
+    const catalog = makeCatalogDraft()
+    seedRichKiro(catalog, [{ key: "sonnet", modelID: "claude-sonnet-4.6" }])
+    h.catalogTransform(catalog.draft)
+    const record = catalog.providers.get("kiro")
+    expect(record).toBeDefined()
+    return { cleanup, record: record! }
+  }
+
+  test("options absent → defaults applied", async () => {
+    const h = makeMockContext() // NO options key at all — the ?? {} guard witness
+    expect("options" in h.raw).toBe(false)
+
+    const { cleanup, record } = await setupAndTransform(h)
+
+    // setup kick-off fired with the default `discover: true`
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    // catalog settings carry the documented defaults
+    expect(record.provider.settings).toMatchObject({ agent: "opencode", mcpTimeout: 45 })
+    expect(record.provider.settings.trustAllTools).toBe(true)
+
+    await cleanup()
+  })
+
+  test("custom agent/mcpTimeout flow to createKiroAcp", async () => {
+    const h = makeMockContext({ options: { agent: "custom", mcpTimeout: 90 } })
+    const { cleanup, record } = await setupAndTransform(h)
+
+    // catalog side
+    expect(record.provider.settings).toMatchObject({ agent: "custom", mcpTimeout: 90 })
+    expect(record.provider.settings.trustAllTools).toBe(true) // never an option
+
+    // host side: provider.settings → prepareOptions spread (+ injected fetch)
+    // → sdk hook → allowlist (both keys allowlisted) → createKiroAcp
+    const options = { ...record.provider.settings, fetch: () => {} }
+    await h.sdkHook({ model: { modelID: "claude-sonnet-4.6" }, package: "kiro-acp-ai-provider", options, sdk: undefined })
+    expect(mockCreateKiroAcp).toHaveBeenCalledTimes(1)
+    expect(mockCreateKiroAcp).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "custom", mcpTimeout: 90, cwd: h.directory }),
+    )
+
+    await cleanup()
+  })
+
+  test("type-invalid options fall back to defaults", async () => {
+    // wrong types for every key: parsing is defensive, setup must not throw
+    const h = makeMockContext({ options: { agent: 7, mcpTimeout: "45", discover: "yes" } })
+    const { cleanup, record } = await setupAndTransform(h)
+
+    expect(mockListModels).toHaveBeenCalledTimes(1) // discover fell back to true
+    expect(record.provider.settings).toMatchObject({ agent: "opencode", mcpTimeout: 45 })
+    await cleanup()
+
+    // edge values that pass a naive typeof: empty agent and a non-finite timeout
+    const h2 = makeMockContext({ options: { agent: "", mcpTimeout: Number.NaN } })
+    const second = await setupAndTransform(h2)
+    expect(second.record.provider.settings).toMatchObject({ agent: "opencode", mcpTimeout: 45 })
+    await second.cleanup()
+  })
+
+  test("discover:false gates setup kick-off only", async () => {
+    const h = makeMockContext({ options: { discover: false } })
+    h.active.mockResolvedValue({ integrationID: "kiro" }) // connected at setup
+    mockListModels.mockResolvedValue([runtime("model-a")])
+
+    const cleanup = await runSetup(h)
+    await flush()
+
+    // connected, yet NO setup-time discovery
+    expect(mockListModels).not.toHaveBeenCalled()
+    expect(h.reload).not.toHaveBeenCalled()
+
+    // the event-driven path is untouched: a credential event still discovers
+    h.events.push(credentialUpdatedEvent())
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(mockListModels).toHaveBeenCalledWith({ cwd: h.directory })
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    await cleanup()
+  })
+
+  test("no cwd option surface", async () => {
+    // a user-supplied cwd is an UNKNOWN key: ignored silently, never plumbed
+    const h = makeMockContext({ options: { cwd: "/elsewhere" } })
+    const { cleanup, record } = await setupAndTransform(h)
+
+    // discovery and catalog settings both derive cwd from the location
+    expect(mockListModels).toHaveBeenCalledWith({ cwd: h.directory })
+    expect(record.provider.settings.cwd).toBe(h.directory)
+    expect(JSON.stringify(record.provider.settings)).not.toContain("/elsewhere")
+
+    // and the factory never sees it either
+    const options = { ...record.provider.settings, fetch: () => {} }
+    await h.sdkHook({ model: { modelID: "claude-sonnet-4.6" }, package: "kiro-acp-ai-provider", options, sdk: undefined })
+    expect(mockCreateKiroAcp).toHaveBeenCalledWith(expect.objectContaining({ cwd: h.directory }))
+    expect(JSON.stringify(mockCreateKiroAcp.mock.calls)).not.toContain("/elsewhere")
 
     await cleanup()
   })

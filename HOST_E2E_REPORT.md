@@ -586,3 +586,135 @@ sums, `-kiro` killing both halves, clean teardown with a byte-identical clone.
   `variant`; `POST /api/session/:id/prompt {text}`); Basic auth +
   `{location,data}` envelope unchanged; assistant `providerState` mirror
   unchanged.
+
+## Beta.4 e2e at 8ba434b597 (checkpoint 05 — atom validation)
+
+**Task**: beta4-adoption-05 — user-assisted live checkpoint: re-verification of F-7 (effort on the wire via the **NEW override path**) + F-8 (credits, regression witness) after the Phase 2 atom (allowlist-sanitized SDK cache key + `aisdk.language` hook carrying effort via `languageModel(id, {effort})` + process-constant `clientInfo`)
+**Plugin under test**: `opencode-v2` working tree at `4c9c8d0` + uncommitted Phase 1/2 atom (`src/server/aisdk.ts`, `src/server/discovery.ts`, `test/server.test.ts`); `package.json` still `0.5.0-beta.3` (bump is Task 11)
+**Host SHA**: `8ba434b5973856b2f32b8cd3543e154b25c413e6` (`upstream/v2`; same pin as beta.3)
+**Date**: 2026-09-02
+**Method**: detached `git worktree` of `opencode-v2-kiro` at `8ba434b597` (`bun install` 4829 packages); hermetic XDG (config/data/cache/state) + `OPENCODE_CONFIG_PROJECT_DISABLE=1`; real HOME kept (kiro-cli 2.20.1, IamIdentityCenter account); fresh `npm pack` from the working tree → `opencode-kiro-0.5.0-beta.3.tgz` (10 files, 14.4 kB, shasum `819c981d0dd5f6485b9de00de1c1696f54db919c`); **colon-free registry-layout seed** at `$XDG_CACHE_HOME/opencode/packages/opencode-kiro@0.5.0-beta.3/` (seed-root `package.json`, per the beta.3 harness footnote), config = ONE entry `{"plugins":["opencode-kiro@0.5.0-beta.3"]}`; `OPENCODE_MODELS_PATH=<models.dev>/.artifacts/api.json` (18 kiro models); PATH-shim `kiro-cli` teeing ACP stdin per instance (`acp-stdin-<pid>.jsonl`); `bun run dev serve --port 44401` (Basic auth user `opencode`, password via `OPENCODE_PASSWORD` for the TUI); API driven with curl against `/openapi.json`-discovered routes; TUI attached via `bun run dev --server http://127.0.0.1:44401 -s <session>` under `script(1)` at the REAL terminal size. **Harness note (not a plugin issue)**: a forced `stty cols 220` with a narrower real window produced wrapped garbage — live viewing must use the real size; 220x60 is for pyte replay only.
+
+### Checklist results (beta.4 checkpoint 05)
+
+| # | Item | Result | Evidence |
+|---|------|--------|----------|
+| G-1 | Plugin active (`tui: true` auto-load, single config entry) | PASS | `GET /api/plugin` → **80 plugins incl. `{"id":"kiro","source":{"type":"package","package":"opencode-kiro@0.5.0-beta.3"},"status":"active","tui":true}`**. Resolution from the seeded registry layout (working-tree build; the seeded tarball is the only candidate). |
+| G-2 | Connect via plugin-owned method; discovery; 18 enriched models; **no `effort` in provider settings** | PASS | `POST /api/integration/kiro/connect/oauth {"methodID":"kiro-cli-login"}` → already-authed short-circuit (`instructions:"Already authenticated with Kiro CLI."`, `mode:"auto"`), attempt `con_062a890d60015sOIFwbnW3RcIP` status `complete`; credential `cred_062a890d90015RKH7xPZ4SRyjL` label "Kiro". Discovery ran: two `kiro-cli acp` probes (tee 14881/14921, 7150 B each) enumerating 19 runtime models with `_kiro.dev/commands/options effort` per model. `GET /api/model` → 134 total, **18 kiro** (models.dev ∩ runtime), rich names/limits, per-model effort variants (`claude-sonnet-5`: low/medium/high/xhigh/max; `gpt-5.6-*`: none…max; `claude-opus-4.5`: none). API-shape note: `GET /api/provider/kiro` has no `models` field at this API version — models live at `/api/model`. `provider.settings` = `{cwd, agent:"opencode", trustAllTools:true, mcpTimeout:45, contextWindows:{18 entries}}` — **no `effort` key** (atom: effort excluded from provider settings, so it cannot reach kiro-cli via the provider config anymore). |
+| F-7 | **Effort on the wire via the NEW override path** (ACP stdin capture) | **PASS** | Session `ses_f9d4e94acffe62x0eR5VePZXiX` created with `{"providerID":"kiro","id":"claude-sonnet-5","variant":"high"}`, prompt "Reply with exactly one word: pong". Main client tee `acp-stdin-17287.jsonl` (the one carrying `session/prompt`): `_kiro.dev/commands/execute {"command":"effort","args":{"value":"high"}}`. Assistant `msg_062b19369001oJsSluVlkJPk8b` `finish:"stop"`, `model.variant:"high"`, `providerState {credits:0.07201, creditsUnit:"credit", contextUsagePercentage:1.74, turnDurationMs:2447}`. Since `provider.settings` carries no effort (G-2), the override path (`languageModel(id,{effort})` via the `aisdk.language` hook) is the ONLY route the value could have taken. |
+| F-7b | **Shared provider across efforts (NEW — the atom's headline win)** | **PASS** | User switched the SAME session to variant `low` in the TUI and prompted. The **same** main client tee 17287 received `{"command":"effort","args":{"value":"low"}}`; tee-file count stayed **3**; no new `kiro-cli acp` process spawned. Under the pre-atom design each effort minted a new `createKiroAcp` provider (+ ACP process); now ONE provider with a per-call override. |
+| F-7c | Instance count ≤ baseline (no per-effort growth) | PASS | 3 non-empty tee files (2 discovery probes + 1 main client) = beta.2/beta.3 baseline (3). Ephemeral client PID 17355 observed transiently at the first turn, then exited. All ACP children of the server (PIDs 17287/17289 under server 13588). |
+| F-8 | Credits chip (footer row) + box live on a text turn; durable across restart; no double-count (regression witness) | PASS | TUI attached to the running server. **Mount**: footer chip `0.07 credits` + sidebar box `Kiro` / `0.07 credits` alongside built-ins (`Context 17,444 tokens / 2% used`). **Live**: turn ("thanks!") → BOTH surfaces updated in place to **`0.16 credits`**; API check: `providerState` credits 0.07201 + 0.08517 = 0.15718 → 0.16, no double count. **Durable across restart**: fresh mount repainted `0.16` on both surfaces. `grep -c -E 'crashed|No renderer found' tui-f8.txt` → **0**. |
+
+Observations (informational, not defects):
+
+- **O-1 — discovery probes still identify as the upstream SDK default**: the two
+  `listModels()` probes' ACP `initialize` carry
+  `clientInfo:{"name":"kiro-acp-ai-provider","version":"1.0.0"}` —
+  `listModels()` builds its own client and bypasses the plugin's sdk hook; only
+  the main provider gets the plugin's `clientInfo {name:"opencode-kiro"}`. Worth
+  a release-notes line.
+- **O-2 — effort is per ACP session on the kiro-cli side**: a second turn at the
+  same effort sent no additional `effort` command (kiro-cli keeps effort per ACP
+  session); a change of effort on the same session DID send a new command
+  (F-7b) — expected behavior.
+
+### VERDICT (beta.4 checkpoint 05)
+
+**CHECKPOINT 05 PASS — PHASE 3 UNBLOCKED.** All 6 rows PASS. F-7 is validated on
+the wire through the NEW override path: `provider.settings` carries no `effort`
+key, yet the main ACP client received `effort=high` via `_kiro.dev/commands/
+execute`, so the value can only have travelled through the `aisdk.language`
+hook's `languageModel(id, {effort})` override. F-7b proves the atom's headline
+win live: switching the same session from `high` to `low` re-used the SAME ACP
+client (same tee file, `effort=low` on the wire, tee-file count unchanged at 3,
+no new `kiro-cli acp` process) — one shared provider with per-call effort
+override, replacing the per-effort provider + ACP process of the pre-atom
+design. F-8 is unchanged as the regression witness: footer chip + sidebar box
+mount durable (`0.07`), live-update to the exact never-doubled sum (`0.16`), and
+repaint durable on a fresh mount; 0 crash/renderer errors. Instance count stayed
+at the beta.2/beta.3 baseline (3), with no per-effort growth.
+
+Captures kept (temp, teardown pending — server left running for possible later
+rows): shim dir
+`/var/folders/gw/03ckh14x03b6pgn_sk4p29640000gn/T/tmp.4T2zXJNOk2/acp-stdin-{14881,14921,17287}.jsonl`;
+pty capture `$HERM/tui-f8.txt`
+(`HERM=/var/folders/gw/03ckh14x03b6pgn_sk4p29640000gn/T/tmp.dGw8BVyCjs`);
+worktree
+`/private/var/folders/gw/03ckh14x03b6pgn_sk4p29640000gn/T/tmp.25vQDuWKPn/e2e-beta4`.
+
+### Checkpoint 09 — login-flow smoke (Items 3+4)
+
+**Task**: beta4-adoption-09 — user-assisted live smoke of the login flow after Phases 1-3 (Task 06 options, Task 07 `verifyAuthAsync` adoption + Req 6 callback guard) plus fix iteration 1 (see D-1 below). Items under test: **Item 3** (non-blocking auth probe — TUI stays responsive during active login polling) and **Item 4** (login attempt lifecycle: abandon, then reconnect over a pending attempt).
+**Plugin under test**: `opencode-v2` working tree with Phases 1-3 + fix iteration 1 (`src/server/auth.ts`, `test/server.test.ts`); SDK `kiro-acp-ai-provider` **3.1.0** from local tarball (shasum `93e620b68815e2f20e4a893d5eb7001e2be31c4b`); `package.json` still pins `3.0.0` (re-pin is Task 11).
+**Host SHA**: `8ba434b5973856b2f32b8cd3543e154b25c413e6` (same worktree as checkpoint 05)
+**Date**: 2026-09-02
+**Method**: same harness as checkpoint 05 (worktree @ `8ba434b597`, hermetic XDG, PATH-shim `kiro-cli`, `serve --port 44401`, TUI attached via `--server` + `OPENCODE_PASSWORD`). Before EACH run: fresh `$XDG_DATA_HOME/opencode` + `kiro-cli logout`, so Leg 1 is a true logged-out → connect. Three legs per run: **Leg 1** connect from logged-out (complete via browser); **Leg 2** abandon (logout + disconnect + start login, browser closed, attempt left `pending`); **Leg 3** reconnect over the pending attempt and complete. Post-run checks: `ps -eo pid,ppid,etime,command | grep '[k]iro-cli login'` (leaked child) and `grep -ciE 'unhandled|UnhandledPromiseRejection' server-smoke.log`.
+
+| # | Item | Result | Evidence |
+|---|------|--------|----------|
+| L-1 | Leg 1 — connect from logged-out; discovery; 18 models | PASS | Run 1 and run 2: `kiro-cli login` spawned, browser completion → attempt `complete`, credential created, **18 kiro models** registered at `GET /api/model`. |
+| L-1b | **Item 3 — TUI responsive during active polling** | PASS | Run 2: user interacted with the TUI while the login poll was active and reported the run correct — no freezes (the blocking-probe fix under test). |
+| L-2 | Leg 2 — abandon (logout + disconnect + start login, browser closed) | PASS | Attempt left `pending` in both runs; no crash, no stuck server; log clean. |
+| L-3 | Leg 3 — reconnect over the pending attempt + complete | PASS (functional, both runs) | Second `authorize()` over the in-flight attempt; new login completed, credential restored, models re-registered. |
+| L-4 | No leaked `kiro-cli login` child after Leg 3 | **run 1 FAIL → run 2 PASS** | Run 1: `ps` showed a surviving `/Users/user/.local/bin/kiro-cli login` (PID 32871, ppid = server, spawned at Leg 2 start, alive >3.5 min) → **D-1**. Run 2 (fixed build): `ps -eo pid,ppid,etime,command \| grep '[k]iro-cli login'` → **EMPTY**. |
+| L-5 | No unhandled rejections in server log | PASS | `grep -ciE 'unhandled\|UnhandledPromiseRejection' server-smoke.log` → **0** in both runs. |
+
+Defect found and fixed (fix iteration 1):
+
+- **D-1 — orphaned `kiro-cli login` child when a new attempt starts over a
+  pending one** (pre-existing; predates Phase 3, first exposed by Leg 3's
+  reconnect-over-pending). Root cause: `authorize()` shares one `AuthResources`
+  across attempts and, on the second call, overwrote `child`/`cancelPoll`
+  without releasing the first — the first child fell out of bookkeeping and the
+  two polls' state cross-wired. Fix (`src/server/auth.ts`): a new attempt
+  **supersedes** any in-flight one —
+  `releaseLoginResources(resources, new Error("Kiro CLI login superseded by a new login attempt."))`
+  runs before spawning (kills the previous child, clears its timer, rejects the
+  previous callback observably); the async-tick guard became an own-canceller
+  identity check (`cancelPoll !== cancel`, a strict superset of the disposal
+  `=== undefined` bail); the `node:child_process` import was hoisted so
+  check → spawn → claim is one synchronous segment (closes a same-microtask
+  double-`authorize` race). Auth-state comment gained state 6 (superseded).
+  Locks: 3 new tests in `test/server.test.ts` (supersession; supersession
+  mid-probe; same-microtask double authorize), each with a verified negative
+  witness. Suite **124/124** (was 121). Re-gate PASS (54/54 targeted).
+  **Release-notes line for Task 11**: user-visible behavior change — starting a
+  new Kiro CLI Login while one is pending now cancels the previous attempt with
+  a "superseded" error instead of leaking its `kiro-cli login` process.
+
+Harness notes (not plugin defects):
+
+- **H-1 — npm nested a 3.0.0 SDK under the plugin**: installing the plugin
+  tarball into the seed and then `npm install --no-save` of the 3.1.0 SDK
+  tarball made npm NEST a `3.0.0` copy under `opencode-kiro/node_modules/` to
+  satisfy the plugin's exact `3.0.0` pin → plugin resolved 3.0.0 →
+  `authorize()` threw `TypeError: verifyAuthAsync is not a function` → HTTP 500
+  → TUI toast "UnexpectedStatus". Reinstalling the plugin tarball later
+  reconciled the ROOT back to 3.0.0 (the `--no-save` copy is not in the seed
+  lockfile). Workaround: re-run the `--no-save` install and `rm -rf` the nested
+  copy; verify with `bun -e 'import("kiro-acp-ai-provider")'` from the plugin
+  dir (`import.meta.resolve` must point at the root copy). This is precisely
+  the dev-window hazard Task 11's registry re-pin to 3.1.0 removes.
+- **H-2 — stale marker credential + logged-out kiro-cli**: reusing a data dir
+  with a leftover marker credential while kiro-cli is logged out lets the host
+  list/select kiro models while the ACP child cannot authenticate → prompt
+  loads indefinitely. By design (kiro-cli owns the credential lifecycle; the
+  marker is a presence flag) — smoke must start from a fresh data dir.
+- **H-3 — TUI attach flags**: `--server` and `--standalone` are mutually
+  exclusive; the server password must be passed via `OPENCODE_PASSWORD`
+  (URL-inline credentials are ignored → the health check reports
+  "UnsupportedContentType" on the 401).
+
+### VERDICT (beta.4 checkpoint 09)
+
+**CHECKPOINT 09 PASS (after one fix iteration) — RELEASE PHASE UNBLOCKED.**
+Run 1 exposed D-1 (leaked `kiro-cli login` child on reconnect-over-pending;
+functionally all three legs still passed and the log had 0 unhandled
+rejections). Run 2 on the fixed build passed every row: Leg 1 connect from a
+true logged-out state completed with 18 models registered and the TUI stayed
+responsive during active polling (Item 3); Leg 2 abandon left a clean pending
+attempt; Leg 3 reconnect over the pending attempt completed (Item 4) with **no
+surviving `kiro-cli login` process** and **0** unhandled rejections in
+`server-smoke.log`. Harness findings H-1..H-3 are recorded for the release
+runbook; H-1 is removed by Task 11's re-pin to SDK 3.1.0.

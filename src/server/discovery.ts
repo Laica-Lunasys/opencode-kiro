@@ -13,6 +13,14 @@
 // runtime modelIds, or a discovery exception leave the previous catalog data
 // untouched — no partial results are ever published.
 //
+// Plugin options (beta.4 Item 6): `agent` / `mcpTimeout` / `discover` are
+// resolved once in src/server.ts (`context.options ?? {}` — both v2 mock
+// contexts and older hosts omit `options`) and carried on DiscoveryState so
+// the catalog transform closure emits them into `provider.settings` and the
+// setup kick-off honors `discover`. There is deliberately NO `cwd` option:
+// the per-location `integration.list().location.directory` derivation below
+// is strictly better than a user-supplied path.
+//
 // The SDK import stays lazy so dist/server.js loads under plain Node without
 // touching kiro-acp-ai-provider at module import time (v1 discipline).
 import type { Integration, Model, Plugin } from "@opencode-ai/plugin"
@@ -37,11 +45,22 @@ function asString(value: unknown): string {
   return value as string
 }
 
+// resolved plugin options (defaults applied by src/server.ts `resolveOptions`).
+// Exactly three keys — `trustAllTools` stays hardcoded and `cwd` is NOT an
+// option by design.
+export interface KiroPluginOptions {
+  agent: string
+  mcpTimeout: number
+  discover: boolean
+}
+
 // per-location discovery state, shared with tasks 05/07 via `src/server.ts`
 // setup. `cwd` comes from a public location-bearing response during setup —
-// never from `process.cwd()` captured at module load.
+// never from `process.cwd()` captured at module load. `options` are the
+// resolved plugin options the transform emits into `provider.settings`.
 export interface DiscoveryState {
   cwd: string
+  options: KiroPluginOptions
   snapshot: readonly ModelWithEfforts[] | undefined
   generation: number
   inflight: Promise<void> | undefined
@@ -118,7 +137,10 @@ function applyEfforts(model: MutableModel, runtimeModel: ModelWithEfforts): void
 // - no rich entry → minimal self-registration of ONLY runtime-returned models
 // Provider settings carry the deterministic SDK factory inputs that become
 // `event.options` for task 07's AISDK hook; `contextWindows` is keyed by the
-// API model ID (`Model.Info.modelID`), not the catalog key.
+// API model ID (`Model.Info.modelID`), not the catalog key. `agent` and
+// `mcpTimeout` come from the resolved plugin options; both keys are on the
+// sdk hook's SETTINGS_ALLOWLIST (src/server/aisdk.ts), so custom values reach
+// `createKiroAcp` through catalog → host overlay → `event.options` unchanged.
 export function applyCatalogSnapshot(draft: CatalogDraft, state: DiscoveryState): void {
   const snapshot = state.snapshot
   if (snapshot === undefined || snapshot.length === 0) return
@@ -165,9 +187,9 @@ export function applyCatalogSnapshot(draft: CatalogDraft, state: DiscoveryState)
     provider.settings = {
       ...provider.settings,
       cwd: state.cwd,
-      agent: "opencode",
-      trustAllTools: true,
-      mcpTimeout: 45,
+      agent: state.options.agent,
+      trustAllTools: true, // not exposed as an option (Req 9 lists exactly three)
+      mcpTimeout: state.options.mcpTimeout,
       contextWindows,
     }
   })
@@ -281,20 +303,23 @@ async function consumeEvents(
 }
 
 // register the catalog transform + event consumer and kick off one coalesced
-// initial discovery when Kiro is already connected. Returns one disposer that
-// invalidates pending generations, stops/awaits the event consumer, and
-// unregisters the transform. An in-flight `listModels` has no documented
-// cancellation — it is NOT awaited; the final generation bump guarantees its
-// completion is discarded.
+// initial discovery when Kiro is already connected AND `options.discover` is
+// not false. Returns one disposer that invalidates pending generations,
+// stops/awaits the event consumer, and unregisters the transform. An
+// in-flight `listModels` has no documented cancellation — it is NOT awaited;
+// the final generation bump guarantees its completion is discarded.
 export async function registerDiscovery(
   context: Plugin.Context,
   resources: DiscoveryResources,
+  options: KiroPluginOptions,
 ): Promise<() => Promise<void>> {
   // per-location cwd from a public location-bearing response (doc "Location
-  // and lifecycle") — never process.cwd() at module load
+  // and lifecycle") — never process.cwd() at module load (and never a plugin
+  // option: no `cwd` option surface exists by design)
   const { location } = await context.integration.list()
   const state: DiscoveryState = {
     cwd: location.directory,
+    options,
     snapshot: undefined,
     generation: 0,
     inflight: undefined,
@@ -313,8 +338,11 @@ export async function registerDiscovery(
   resources.eventTask = consumeEvents(iterator, discover)
 
   // setup kick-off: one coalesced discovery, fire-and-forget so setup does
-  // not block on model listing; discover() never rejects past this guard
-  if (await context.integration.connection.active(KIRO_INTEGRATION_ID)) {
+  // not block on model listing; discover() never rejects past this guard.
+  // `discover: false` gates ONLY this setup-time kick-off — the event-driven
+  // path (consumeEvents → discover) stays live so a user who logs in later
+  // still gets models.
+  if (options.discover && (await context.integration.connection.active(KIRO_INTEGRATION_ID))) {
     void discover("setup").catch(() => {})
   }
 
