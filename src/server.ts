@@ -26,6 +26,9 @@ import { buildCleanup, createServerState } from "./server/lifecycle.js"
 // swallowed so they cannot mask it.
 const plugin: Plugin.Plugin = {
   id: "kiro",
+  // tui: true (dist/promise/plugin.d.ts:40) — the host auto-loads this
+  // package's `./tui` entrypoint for npm-channel installs (single config entry)
+  tui: true,
   async setup(context: Plugin.Context): Promise<Plugin.Cleanup> {
     const state = createServerState()
     const cleanup = buildCleanup(state)

@@ -1,24 +1,38 @@
-// credits-only sidebar box for the v2 `sidebar.content` slot, appended after the built-in
-// sections (v2 exposes no slot-ordering API). This is the plugin's ONLY credits surface:
-// the pinned SHA's typed slot set removed `session.composer.top`, and the descoped composer
-// strip's entire content — the live formatted total + unit line — is carried here under the
-// "Kiro" header, updating live as durable/transient credits change. Presentation only:
-// tui.ts assembles the merged durable+transient rollup and passes it in as an accessor;
-// this module never touches the TUI context. Default/inherited styling throughout — v2 has
-// no supported theme-token API, so nothing sets foreground colors and the terminal/host
-// defaults apply.
+// credits sidebar box for the v2 `sidebar.content` slot, claimed with `append` so it composes
+// after the built-in sections (additive under the claims-based slot API — immutable
+// requirement 17). The formatted total + unit line under the "Kiro" header updates live as
+// durable/transient credits change; a compact companion chip (credits-chip-view.ts) carries
+// the same total above the composer. Presentation only: tui.ts assembles the merged
+// durable+transient rollup and passes it in as an accessor plus optional feature-detected
+// `context.theme` tokens; this module never touches the TUI context. With no tokens (absent
+// or misshapen theme), nothing sets foreground colors and the terminal/host defaults apply —
+// rendering never DEPENDS on the theme (immutable requirement 12).
 // built with @opentui/solid's universal-renderer calls (what compiled Solid JSX lowers to)
 // so dist needs no solid transform; @opentui/solid and solid-js stay external (and, inside
 // the TUI host, resolve to the HOST's module instances via its runtime-plugin loader shim).
-import { createElement, insert, insertNode, type DomNode } from "@opentui/solid"
+import type { ColorInput } from "@opentui/core"
+import { createElement, insert, insertNode, setProp, type DomNode } from "@opentui/solid"
 import { createMemo } from "solid-js"
 import { formatCredits, type SessionCredits } from "./credits.js"
 
 /**
- * Build the Kiro credits box for one session. `credits` is the merged durable+transient
- * session rollup assembled in tui.ts (reconciled on every fresh durable read).
+ * Feature-detected `context.theme` colors for the credits views (validated by tui.ts from
+ * `theme.text.default` / `theme.text.subdued` — RGBA at the pinned SHA). Every field is
+ * optional: an absent token means "leave the default/inherited styling alone".
  */
-export function createCreditsBoxView(credits: () => SessionCredits): DomNode {
+export interface CreditThemeTokens {
+  /** Header foreground (`theme.text.default`). */
+  readonly default?: ColorInput
+  /** Amount/chip foreground (`theme.text.subdued`). */
+  readonly subdued?: ColorInput
+}
+
+/**
+ * Build the Kiro credits box for one session. `credits` is the merged durable+transient
+ * session rollup assembled in tui.ts (reconciled on every fresh durable read); `tokens` are
+ * the optional feature-detected theme colors.
+ */
+export function createCreditsBoxView(credits: () => SessionCredits, tokens?: CreditThemeTokens): DomNode {
   const current = createMemo(credits)
 
   // stable nodes with reactive strings: both render "" with no credits, so the box collapses
@@ -28,27 +42,29 @@ export function createCreditsBoxView(credits: () => SessionCredits): DomNode {
   const root = createElement("box")
   insertNode(
     root,
-    headerLine(() => (current().present ? "Kiro" : "")),
+    headerLine(() => (current().present ? "Kiro" : ""), tokens?.default),
   )
   insertNode(
     root,
-    plainLine(() => (current().present ? formatCredits(current().total, current().unit) : "")),
+    plainLine(() => (current().present ? formatCredits(current().total, current().unit) : ""), tokens?.subdued),
   )
   return root
 }
 
-/** `<text><b>{content()}</b></text>` — bold header on the default foreground. */
-function headerLine(content: () => string): DomNode {
+/** `<text fg?><b>{content()}</b></text>` — bold header; themed foreground when a token exists. */
+function headerLine(content: () => string, fg?: ColorInput): DomNode {
   const line = createElement("text")
+  if (fg !== undefined) setProp(line, "fg", fg)
   const bold = createElement("b")
   insert(bold, content)
   insertNode(line, bold)
   return line
 }
 
-/** `<text>{content()}</text>` — inherited/default styling. */
-function plainLine(content: () => string): DomNode {
+/** `<text fg?>{content()}</text>` — themed foreground when a token exists, else inherited/default. */
+function plainLine(content: () => string, fg?: ColorInput): DomNode {
   const line = createElement("text")
+  if (fg !== undefined) setProp(line, "fg", fg)
   insert(line, content)
   return line
 }

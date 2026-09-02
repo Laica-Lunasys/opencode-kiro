@@ -134,9 +134,9 @@ describe("scaffold package contract", () => {
     expect(missing).toEqual([])
   })
 
-  test("credits-chip chunk is back alongside the box chunk (Phase 8 revived composer chip)", async () => {
-    // dev-17968's typed SlotMap re-added session.composer.top; the chip view and
-    // its lazy-import chunk returned — both view chunks must now be emitted.
+  test("credits-chip chunk is emitted alongside the box chunk (footer credits chip)", async () => {
+    // the chip view (claimed at prompt.footer.status since the pre-publish
+    // amendment) lazy-imports as its own chunk — both view chunks must be emitted.
     const distFiles = await readdir(join(ROOT, "dist"))
 
     expect(distFiles.some((file) => file.includes("credits-chip-view"))).toBe(true)

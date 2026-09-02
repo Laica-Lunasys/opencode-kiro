@@ -223,6 +223,7 @@ function makeMockContext() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let sdkHookCb: ((event: any) => Promise<void> | void) | undefined
   let sdkHookName: string | undefined
+  let sdkHookOptions: unknown
 
   const disposeSpies = {
     integration: vi.fn(async () => {}),
@@ -250,10 +251,12 @@ function makeMockContext() {
       reload,
     },
     aisdk: {
+      // dev-17968 signature: hook(name, cb, options?) with ModelHookOptions {providerID?}
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      hook: vi.fn(async (name: string, cb: (event: any) => Promise<void> | void) => {
+      hook: vi.fn(async (name: string, cb: (event: any) => Promise<void> | void, options?: unknown) => {
         sdkHookName = name
         sdkHookCb = cb
+        sdkHookOptions = options
         return { dispose: disposeSpies.hook }
       }),
     },
@@ -282,6 +285,7 @@ function makeMockContext() {
       return sdkHookCb(event)
     },
     getSdkHookName: () => sdkHookName,
+    getSdkHookOptions: () => sdkHookOptions,
   }
 }
 
@@ -348,7 +352,13 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
-  test("registers integration kiro with oauth method", async () => {
+  test("server plugin definition carries tui: true", () => {
+    // dev-17968 `tui?: boolean` (dist/promise/plugin.d.ts:40): the host
+    // auto-loads this package's ./tui entrypoint for npm-channel installs
+    expect(serverPlugin.tui).toBe(true)
+  })
+
+  test("registers integration kiro with a forms-shaped oauth method (no prompts anywhere)", async () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
 
@@ -359,12 +369,21 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
     expect(integration.methods).toHaveLength(1)
     const registration = integration.methods[0]
     expect(registration.integrationID).toBe("kiro")
-    expect(registration.method).toMatchObject({
+    // exact dev-17968 IntegrationOAuthMethod shape: {id, type:"oauth", label};
+    // our flow needs no form fields, so the optional `form` is omitted
+    expect(Object.keys(registration.method).sort()).toEqual(["id", "label", "type"])
+    expect(registration.method).toEqual({
       id: "kiro-cli-login",
       type: "oauth",
       label: "Kiro CLI Login",
     })
+    // the v1-era prompts/select-question API was DELETED upstream: no `prompts`
+    // key may survive on the registration or the method
+    expect("prompts" in registration).toBe(false)
+    expect("prompts" in registration.method).toBe(false)
+    // authorize takes the Form.Answer argument (new dev-17968 signature)
     expect(typeof registration.authorize).toBe("function")
+    expect(registration.authorize.length).toBe(1)
     // kiro-cli owns credential storage/refresh: no refresh callback registered
     expect(registration.refresh).toBeUndefined()
 
@@ -396,7 +415,7 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
     await cleanup()
   })
 
-  test("login spawns kiro-cli and polls to success", async () => {
+  test("authorize(answer) spawns kiro-cli and polls to success", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
     let authenticated = false
     mockVerifyAuth.mockImplementation(() => ({ installed: true, authenticated }))
@@ -407,7 +426,9 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
     const h = makeMockContext()
     const { cleanup, authorize } = await setupWithAuthorize(h)
 
-    const authorization = await authorize({})
+    // Form.Answer argument (dev-17968): our method registers no form fields, so
+    // any answer record — including a stray one — enters the same login flow
+    const authorization = await authorize({ unused: "answer" })
     expect(mockExecFile).toHaveBeenCalledTimes(1)
     expect(mockExecFile).toHaveBeenCalledWith("kiro-cli", ["login"], { shell: false })
     expect(authorization.mode).toBe("auto")
@@ -792,10 +813,12 @@ describe("discovery: catalog transform + runtime model lifecycle (task 06)", () 
 // ---------------------------------------------------------------------------
 
 describe("aisdk hook + lifecycle (task 07)", () => {
-  test("hook overwrites a pre-populated event.sdk with the owned instance", async () => {
+  test("hook is registered providerID-scoped and overwrites a pre-populated event.sdk with the owned instance", async () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
     expect(h.getSdkHookName()).toBe("sdk")
+    // dev-17968 ModelHookOptions scoping: the hook only fires for the kiro provider
+    expect(h.getSdkHookOptions()).toEqual({ providerID: "kiro" })
 
     const unowned = { languageModel: vi.fn() } // DynamicProviderPlugin residue
     const event = {

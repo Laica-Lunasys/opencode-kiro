@@ -273,21 +273,67 @@ describe("spendLines", () => {
   })
 })
 
-// --- TUI setup/cleanup suite (task 10 wiring; sidebar-only since the iteration-2
-// re-pin removed session.composer.top from the typed SlotMap) -----------------
-// The view module lazy-imports @opentui/solid inside setup; tests exercise
-// setup/cleanup and render-path DATA ASSEMBLY, never actual view rendering
-// (host rendering is task 13's scope). The mock below is the test seam: it
-// returns a marker node that exposes the credits accessor tui.ts passes in.
+// --- TUI setup/cleanup suite (task 10 wiring; TWO append claims: `sidebar.content`
+// + `prompt.footer.status` — the chip moved to the prompt footer row (v1 placement
+// restored) in the pre-publish amendment; `ui.slot` takes a claim object and the old
+// `(name, render)` signature is gone) ---------------------------------------------
+// The view modules lazy-import @opentui/solid inside setup. The box view is mocked
+// as the test seam (marker node exposing the injected credits accessor + theme
+// tokens); the chip view stays REAL against lightweight @opentui/solid + solid-js
+// fakes so its single-line/collapse/theming behavior is testable without the
+// Bun-native renderer. Host rendering itself stays task 13/28's scope.
 
-/** Marker node returned by the mocked view factory; exposes the injected accessor. */
+/** Marker node returned by the mocked box-view factory; exposes accessor + tokens. */
 interface FakeViewNode {
   kind: "credits-box"
   credits: () => SessionCredits
+  tokens: unknown
 }
 
+/** Fake @opentui/solid DomNode: tag + props + inserted content accessors/children. */
+interface FakeDomNode {
+  tag: string
+  props: Record<string, unknown>
+  children: unknown[]
+}
+
+vi.mock("@opentui/solid", () => ({
+  createElement: (tag: string): FakeDomNode => ({ tag, props: {}, children: [] }),
+  setProp: (node: FakeDomNode, key: string, value: unknown): void => {
+    node.props[key] = value
+  },
+  insert: (node: FakeDomNode, content: unknown): void => {
+    node.children.push(content)
+  },
+  insertNode: (node: FakeDomNode, child: unknown): void => {
+    node.children.push(child)
+  },
+}))
+
+// Deterministic client-like solid semantics: plain Node resolves solid-js to the
+// once-eval SERVER build (frozen memos), so the fake keeps memos as pass-through
+// accessors and signals as plain boxes — matching how the host's client build
+// re-evaluates render-path reads.
+vi.mock("solid-js", () => ({
+  createMemo: <T>(fn: () => T): (() => T) => fn,
+  createSignal: <T>(initial: T): [() => T, (next: T | ((prev: T) => T)) => T] => {
+    let value = initial
+    return [
+      () => value,
+      (next) => {
+        value = typeof next === "function" ? (next as (prev: T) => T)(value) : next
+        return value
+      },
+    ]
+  },
+}))
+
 vi.mock("../src/tui/credits-box-view.js", () => ({
-  createCreditsBoxView: (credits: () => SessionCredits): FakeViewNode => ({ kind: "credits-box", credits }),
+  createCreditsBoxView: (credits: () => SessionCredits, tokens: unknown): FakeViewNode => ({
+    kind: "credits-box",
+    credits,
+    tokens,
+  }),
 }))
 
 /** Minimal durable v2 message shape served by the mock `data.session.message.list`. */
@@ -297,15 +343,16 @@ interface FixtureMessage {
   content?: ReadonlyArray<CreditPart>
 }
 
+/** Recorded `ui.slot` claim registration (claims API: one placement key + render). */
 interface SlotRegistration {
-  name: string
+  claim: Record<string, unknown>
   render: (props: Record<string, unknown>) => unknown
   unregisterCalls: number
 }
 
 interface MockTuiContext {
   context: {
-    ui: { slot: (name: string, render: (props: Record<string, unknown>) => unknown) => () => void }
+    ui: { slot: (...args: unknown[]) => () => void }
     data: {
       on: (event: string, handler: (event: unknown) => void) => () => void
       session: {
@@ -315,32 +362,48 @@ interface MockTuiContext {
         }
       }
     }
+    theme?: unknown
+    storage?: { memory: ReturnType<typeof vi.fn> }
   }
   slots: SlotRegistration[]
+  slotCalls: unknown[][]
   listeners: Array<{ event: string; handler: (event: unknown) => void; unsubscribeCalls: number }>
   sync: ReturnType<typeof vi.fn>
+  memoryStores: Map<string, unknown>
 }
 
 /**
- * Mock TUI context: records slot/listener registrations with call-counting
- * disposers and serves durable message fixtures from a mutable table.
- * `failUnregisterOf` makes that slot's disposer throw (cleanup aggregation).
+ * Mock TUI context: records slot-claim/listener registrations with
+ * call-counting disposers and serves durable message fixtures from a mutable
+ * table. `failUnregisterOf` makes that claim path's disposer throw (cleanup
+ * aggregation). `theme` (feature-detected tokens) and `withMemoryStorage`
+ * (TUI `storage.memory`) are opt-in — both absent by default so the fallback
+ * paths stay the baseline under test.
  */
 const makeTuiContext = (options?: {
   messages?: Record<string, ReadonlyArray<FixtureMessage>>
   failUnregisterOf?: string
+  theme?: unknown
+  withMemoryStorage?: boolean
 }): MockTuiContext => {
   const slots: SlotRegistration[] = []
+  const slotCalls: unknown[][] = []
   const listeners: Array<{ event: string; handler: (event: unknown) => void; unsubscribeCalls: number }> = []
   const sync = vi.fn()
+  const memoryStores = new Map<string, unknown>()
   const context: MockTuiContext["context"] = {
     ui: {
-      slot: (name, render) => {
-        const registration: SlotRegistration = { name, render, unregisterCalls: 0 }
+      slot: (...args: unknown[]) => {
+        slotCalls.push(args)
+        const claim = args[0] as Record<string, unknown> & {
+          render: (props: Record<string, unknown>) => unknown
+        }
+        const registration: SlotRegistration = { claim, render: claim.render, unregisterCalls: 0 }
         slots.push(registration)
         return () => {
           registration.unregisterCalls += 1
-          if (options?.failUnregisterOf === name) throw new Error(`unregister ${name} failed`)
+          if (options?.failUnregisterOf !== undefined && claim.append === options.failUnregisterOf)
+            throw new Error(`unregister ${options.failUnregisterOf} failed`)
         }
       },
     },
@@ -355,10 +418,20 @@ const makeTuiContext = (options?: {
       session: { message: { list: (sessionID) => options?.messages?.[sessionID], sync } },
     },
   }
-  return { context, slots, listeners, sync }
+  if (options?.theme !== undefined) context.theme = options.theme
+  if (options?.withMemoryStorage) {
+    // memory-backed stores outlive one plugin generation: same key -> same store
+    context.storage = {
+      memory: vi.fn((key: string, opts: { initial: unknown }) => {
+        if (!memoryStores.has(key)) memoryStores.set(key, opts.initial)
+        return [memoryStores.get(key)]
+      }),
+    }
+  }
+  return { context, slots, slotCalls, listeners, sync, memoryStores }
 }
 
-/** Load the TUI plugin (views mocked above) and run setup against a mock context. */
+/** Load the TUI plugin (box view mocked above) and run setup against a mock context. */
 const setupPlugin = async (
   mock: MockTuiContext,
 ): Promise<() => Promise<void>> => {
@@ -366,23 +439,52 @@ const setupPlugin = async (
   return (await plugin.setup(mock.context as never)) as () => Promise<void>
 }
 
-/** Render a registered slot and return its reactive accessor (view-or-null). */
-const renderSlot = (mock: MockTuiContext, name: string, props: Record<string, unknown>): (() => FakeViewNode | null) => {
-  const slot = mock.slots.find((registration) => registration.name === name)
-  expect(slot, `slot ${name} must be registered`).toBeDefined()
-  return slot!.render(props) as () => FakeViewNode | null
+/** Find the registration claiming `append: path`. */
+const claimFor = (mock: MockTuiContext, path: string): SlotRegistration => {
+  const slot = mock.slots.find((registration) => registration.claim.append === path)
+  expect(slot, `append claim for ${path} must be registered`).toBeDefined()
+  return slot!
 }
 
+/** Render a registered slot claim and return its reactive accessor (view-or-null). */
+const renderSlot = (mock: MockTuiContext, path: string, props: Record<string, unknown>): (() => unknown) =>
+  claimFor(mock, path).render(props) as () => unknown
+
+/** The box-view accessor for the sidebar claim (typed marker seam). */
+const renderSidebar = (mock: MockTuiContext, props: Record<string, unknown>): (() => FakeViewNode | null) =>
+  renderSlot(mock, "sidebar.content", props) as () => FakeViewNode | null
+
 describe("tui setup registrations", () => {
-  test("setup registers exactly one slot (sidebar.content) and one text-ended listener", async () => {
+  test("setup registers TWO append claims (sidebar.content + prompt.footer.status) and one text-ended listener", async () => {
     const mock = makeTuiContext()
 
     const cleanup = await setupPlugin(mock)
 
-    // sidebar-only surface: the pinned SHA's typed SlotMap has no session.composer.top
-    expect(mock.slots.map((slot) => slot.name)).toEqual(["sidebar.content"])
+    // Amended surface: box in the sidebar + chip in the prompt footer row, both ADDITIVE
+    // (`append` is the only placement key on each claim — never `replace`; req. 17).
+    // NOT session.composer.top: the chip moved to the footer (v1 placement restored).
+    expect(mock.slots.map((slot) => slot.claim.append)).toEqual(["sidebar.content", "prompt.footer.status"])
+    for (const slot of mock.slots) {
+      expect(Object.keys(slot.claim).sort()).toEqual(["append", "render"])
+      expect(typeof slot.claim.render).toBe("function")
+    }
     expect(mock.listeners).toHaveLength(1)
     expect(mock.listeners[0]!.event).toBe("session.text.ended")
+    await cleanup()
+  })
+
+  test("no old-signature slot calls: every registration is a single claim object", async () => {
+    const mock = makeTuiContext()
+
+    const cleanup = await setupPlugin(mock)
+
+    // the `(name, render)` signature is gone at dev-17968; a string first arg
+    // or a second render arg would silently no-op in the host
+    expect(mock.slotCalls).toHaveLength(2)
+    for (const args of mock.slotCalls) {
+      expect(args).toHaveLength(1)
+      expect(typeof args[0]).toBe("object")
+    }
     await cleanup()
   })
 
@@ -393,7 +495,7 @@ describe("tui setup registrations", () => {
     })
     const cleanup = await setupPlugin(mock)
     const handler = mock.listeners[0]!.handler
-    const credits = renderSlot(mock, "sidebar.content", { sessionID: "sess" })
+    const credits = renderSidebar(mock, { sessionID: "sess" })
 
     expect(credits()).toBeNull() // nothing recorded yet -> surface withheld
 
@@ -426,7 +528,7 @@ describe("tui setup registrations", () => {
     handler({ data: { sessionID: "sess", assistantMessageID: "msg_1", ordinal: 0, state: { credits: 99, creditsUnit: "credit" } } })
     handler({ data: { sessionID: "sess", assistantMessageID: "msg_2", ordinal: 0, state: { credits: 2, creditsUnit: "credit" } } })
 
-    const sidebar = renderSlot(mock, "sidebar.content", { sessionID: "sess" })
+    const sidebar = renderSidebar(mock, { sessionID: "sess" })
 
     // durable 1 (authoritative over stale 99) + transient 2; never 1+99+2
     const expected: SessionCredits = { total: 3, unit: "credit", present: true }
@@ -434,14 +536,172 @@ describe("tui setup registrations", () => {
     expect(sidebar()!.kind).toBe("credits-box")
     // assembly never forces a durable sync (explicit-refresh fallback only)
     expect(mock.sync).not.toHaveBeenCalled()
-    // session-less props contribute nothing
-    expect(renderSlot(mock, "sidebar.content", {})()).toBeNull()
+    // session-less props contribute nothing (both surfaces; on the footer chip
+    // sessionID is OPTIONAL in PromptFooterInput — absent means withheld, not a crash)
+    expect(renderSidebar(mock, {})()).toBeNull()
+    expect((renderSlot(mock, "prompt.footer.status", { mode: "normal" }) as () => unknown)()).toBeNull()
     await cleanup()
   })
 })
 
+describe("footer chip claim (prompt.footer.status)", () => {
+  const chipAccessor = (mock: MockTuiContext, props: Record<string, unknown>): (() => FakeDomNode | null) =>
+    renderSlot(mock, "prompt.footer.status", props) as () => FakeDomNode | null
+
+  test("chip renders one single-line non-shrinking text node carrying credits + unit", async () => {
+    const mock = makeTuiContext({
+      messages: {
+        sess: [{ id: "msg_1", type: "assistant", content: [statePart("text", { credits: 1.5, creditsUnit: "credit" })] }],
+      },
+    })
+    const cleanup = await setupPlugin(mock)
+
+    const chip = chipAccessor(mock, { sessionID: "sess", mode: "normal" })()
+
+    expect(chip).not.toBeNull()
+    // real chip view against the fake renderer: one <text> node, hard-bounded to a
+    // single row, whose content accessor yields the formatted rollup. flexShrink 0
+    // keeps the short credits string intact in the footer row — the host status box
+    // beside it is the shrinkable one.
+    expect(chip!.tag).toBe("text")
+    expect(chip!.props.height).toBe(1)
+    expect(chip!.props.wrapMode).toBe("none")
+    expect(chip!.props.flexShrink).toBe(0)
+    expect(chip!.children).toHaveLength(1)
+    const content = chip!.children[0] as () => string
+    expect(content()).toBe("1.5 credits")
+    expect(content()).not.toContain("\n")
+    await cleanup()
+  })
+
+  test("chip collapses to empty for credit-less sessions", async () => {
+    const mock = makeTuiContext({
+      messages: { sess: [{ id: "msg_1", type: "assistant", content: [{ type: "text", text: "plain" }] }] },
+    })
+    const cleanup = await setupPlugin(mock)
+
+    // no credit state anywhere: tui.ts withholds the node entirely
+    expect(chipAccessor(mock, { sessionID: "sess", mode: "normal" })()).toBeNull()
+    await cleanup()
+  })
+
+  test("optional sessionID: absent sessionID withholds the chip (PromptFooterInput shape)", async () => {
+    // `prompt.footer.status` props are `{ sessionID?: string; mode: "normal" | "shell" }`
+    // — unlike the sidebar, sessionID may legitimately be absent (home/no-session
+    // footer). The chip is withheld, never crashed.
+    const mock = makeTuiContext({
+      messages: {
+        sess: [{ id: "msg_1", type: "assistant", content: [statePart("text", { credits: 2, creditsUnit: "credit" })] }],
+      },
+    })
+    const cleanup = await setupPlugin(mock)
+
+    expect(chipAccessor(mock, { mode: "normal" })()).toBeNull()
+    expect(chipAccessor(mock, { mode: "shell" })()).toBeNull()
+    // empty-string sessionID is also "no session"
+    expect(chipAccessor(mock, { sessionID: "", mode: "normal" })()).toBeNull()
+    await cleanup()
+  })
+
+  test("mode behavior: chip renders identically in normal and shell modes (mode ignored)", async () => {
+    // Decision (documented in tui.ts): the chip renders in BOTH modes — the host's
+    // footer children don't change by mode at the pin, and collapsing on shell toggle
+    // would only cause a layout jump.
+    const mock = makeTuiContext({
+      messages: {
+        sess: [{ id: "msg_1", type: "assistant", content: [statePart("text", { credits: 3, creditsUnit: "credit" })] }],
+      },
+    })
+    const cleanup = await setupPlugin(mock)
+
+    for (const mode of ["normal", "shell"] as const) {
+      const chip = chipAccessor(mock, { sessionID: "sess", mode })()
+      expect(chip).not.toBeNull()
+      expect((chip!.children[0] as () => string)()).toBe("3 credits")
+    }
+    await cleanup()
+  })
+})
+
+describe("theme feature detection", () => {
+  const THEME = { text: { default: "#e0e0e0", subdued: "#808080" } }
+  const KIRO_MESSAGES: Record<string, ReadonlyArray<FixtureMessage>> = {
+    sess: [{ id: "msg_1", type: "assistant", content: [statePart("text", { credits: 2, creditsUnit: "credit" })] }],
+  }
+
+  test("context.theme tokens flow into both views when present", async () => {
+    const mock = makeTuiContext({ messages: KIRO_MESSAGES, theme: THEME })
+    const cleanup = await setupPlugin(mock)
+
+    const box = renderSidebar(mock, { sessionID: "sess" })()
+    expect(box!.tokens).toEqual({ default: "#e0e0e0", subdued: "#808080" })
+
+    const chip = (renderSlot(mock, "prompt.footer.status", { sessionID: "sess", mode: "normal" }) as () => FakeDomNode | null)()
+    expect(chip!.props.fg).toBe("#808080") // chip stays subdued beside the host status text
+    await cleanup()
+  })
+
+  test("absent or misshapen theme falls back to default styling without throwing", async () => {
+    // rendering never DEPENDS on the theme (req. 12): no theme and junk themes
+    // behave identically — no tokens, no fg, no throw
+    for (const theme of [undefined, null, 42, "dark", {}, { text: null }, { text: { default: "", subdued: 7 } }]) {
+      const mock = makeTuiContext({ messages: KIRO_MESSAGES, ...(theme !== undefined ? { theme } : {}) })
+      const cleanup = await setupPlugin(mock)
+
+      const box = renderSidebar(mock, { sessionID: "sess" })()
+      expect(box!.tokens).toBeUndefined()
+
+      const chip = (renderSlot(mock, "prompt.footer.status", { sessionID: "sess", mode: "normal" }) as () => FakeDomNode | null)()
+      expect(chip).not.toBeNull()
+      expect("fg" in chip!.props).toBe(false)
+      await cleanup()
+    }
+  })
+})
+
+describe("storage.memory feature detection", () => {
+  test("memory-backed store is keyed 'transient-credits' and survives cleanup BY DESIGN", async () => {
+    const mock = makeTuiContext({
+      messages: { sess: [{ id: "msg_1", type: "assistant", content: [{ type: "text", text: "live" }] }] },
+      withMemoryStorage: true,
+    })
+    const cleanup = await setupPlugin(mock)
+    expect(mock.context.storage!.memory).toHaveBeenCalledTimes(1)
+    expect(mock.context.storage!.memory).toHaveBeenCalledWith("transient-credits", expect.objectContaining({ initial: expect.anything() }))
+
+    const handler = mock.listeners[0]!.handler
+    handler({ data: { sessionID: "sess", assistantMessageID: "msg_1", ordinal: 0, state: { credits: 5, creditsUnit: "credit" } } })
+    const credits = renderSidebar(mock, { sessionID: "sess" })
+    expect(credits()!.credits().total).toBe(5)
+
+    await cleanup()
+
+    // the memory store is shared with the NEXT plugin generation (hot reload),
+    // so cleanup must NOT clear it — a fresh setup on the same storage still
+    // sees the recorded transient credits
+    const rerun = await setupPlugin(mock)
+    expect(renderSidebar(mock, { sessionID: "sess" })!()!.credits().total).toBe(5)
+    await rerun()
+  })
+
+  test("fallback per-setup store (no storage.memory) still clears on cleanup", async () => {
+    const mock = makeTuiContext({
+      messages: { sess: [{ id: "msg_1", type: "assistant", content: [{ type: "text", text: "live" }] }] },
+    })
+    const cleanup = await setupPlugin(mock)
+    const handler = mock.listeners[0]!.handler
+    handler({ data: { sessionID: "sess", assistantMessageID: "msg_1", ordinal: 0, state: { credits: 5, creditsUnit: "credit" } } })
+    const credits = renderSidebar(mock, { sessionID: "sess" })
+    expect(credits()!.credits().total).toBe(5)
+
+    await cleanup()
+
+    expect(credits()).toBeNull() // v1 behavior preserved: store emptied
+  })
+})
+
 describe("tui cleanup", () => {
-  test("cleanup unregisters everything, clears the store, aggregates failures, and is idempotent", async () => {
+  test("cleanup disposes both claims and the listener, clears the store, aggregates failures, and is idempotent", async () => {
     const mock = makeTuiContext({
       messages: { sess: [{ id: "msg_1", type: "assistant", content: [{ type: "text", text: "live" }] }] },
       failUnregisterOf: "sidebar.content",
@@ -449,17 +709,19 @@ describe("tui cleanup", () => {
     const cleanup = await setupPlugin(mock)
     const handler = mock.listeners[0]!.handler
     handler({ data: { sessionID: "sess", assistantMessageID: "msg_1", ordinal: 0, state: { credits: 5, creditsUnit: "credit" } } })
-    const credits = renderSlot(mock, "sidebar.content", { sessionID: "sess" })
+    const credits = renderSidebar(mock, { sessionID: "sess" })
     expect(credits()!.credits().total).toBe(5) // transient state present before cleanup
 
-    // one disposer throws: every other disposer still runs, failures aggregate
+    // one claim's disposer throws: every other disposer still runs, failures aggregate
     await expect(cleanup()).rejects.toSatisfy(
       (error: unknown) => error instanceof AggregateError && error.errors.length === 1,
     )
 
+    // BOTH claims (sidebar box + footer chip) unregistered exactly once
+    expect(mock.slots).toHaveLength(2)
     for (const slot of mock.slots) expect(slot.unregisterCalls).toBe(1)
     expect(mock.listeners[0]!.unsubscribeCalls).toBe(1)
-    // the store's clear disposer ran despite the slot failure
+    // the store's clear disposer ran despite the claim failure
     expect(credits()).toBeNull()
 
     // second call is a no-op: resolves, and no disposer runs twice

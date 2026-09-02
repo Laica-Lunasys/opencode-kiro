@@ -17,6 +17,7 @@
 // touching kiro-acp-ai-provider at module import time (v1 discipline).
 import type { Model, Plugin } from "@opencode-ai/plugin"
 import type { KiroACPProvider, KiroACPProviderSettings } from "kiro-acp-ai-provider"
+import { KIRO_PROVIDER_ID } from "./discovery.js"
 
 // bare package name — core normalizes `Provider.Info.package`
 // ("aisdk:kiro-acp-ai-provider") to the package name for the SDK event
@@ -100,23 +101,32 @@ export async function registerAisdkHook(
   context: Plugin.Context,
   resources: AisdkResources,
 ): Promise<() => Promise<void>> {
-  const registration = await context.aisdk.hook("sdk", async (event: SdkHookEvent) => {
-    if (!isKiroPackage(event.package)) return
+  // providerID scoping per installed d.ts ModelHookOptions
+  // (dist/promise/registration.d.ts:4-9): the hook only fires for the kiro
+  // provider. The isKiroPackage guard stays as defense in depth, and the
+  // always-overwrite-owned-`event.sdk` discipline is unchanged
+  // (DynamicProviderPlugin risk).
+  const registration = await context.aisdk.hook(
+    "sdk",
+    async (event: SdkHookEvent) => {
+      if (!isKiroPackage(event.package)) return
 
-    const { createKiroAcp } = await import("kiro-acp-ai-provider")
-    const key = stableOptionsKey(event.options)
-    let sdk = key === undefined ? undefined : resources.cache.get(key)
-    if (sdk === undefined) {
-      // options arrive from provider settings set by the catalog transform:
-      // { cwd, agent: "opencode", trustAllTools: true, mcpTimeout: 45, contextWindows }
-      sdk = createKiroAcp(event.options as KiroACPProviderSettings)
-      resources.ownedSdks.add(sdk)
-      if (key !== undefined) resources.cache.set(key, sdk)
-    }
+      const { createKiroAcp } = await import("kiro-acp-ai-provider")
+      const key = stableOptionsKey(event.options)
+      let sdk = key === undefined ? undefined : resources.cache.get(key)
+      if (sdk === undefined) {
+        // options arrive from provider settings set by the catalog transform:
+        // { cwd, agent: "opencode", trustAllTools: true, mcpTimeout: 45, contextWindows }
+        sdk = createKiroAcp(event.options as KiroACPProviderSettings)
+        resources.ownedSdks.add(sdk)
+        if (key !== undefined) resources.cache.set(key, sdk)
+      }
 
-    // ALWAYS assign, even when DynamicProviderPlugin already populated it
-    event.sdk = sdk
-  })
+      // ALWAYS assign, even when DynamicProviderPlugin already populated it
+      event.sdk = sdk
+    },
+    { providerID: KIRO_PROVIDER_ID },
+  )
   resources.disposeHook = registration.dispose
 
   return async () => {

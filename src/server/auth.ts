@@ -30,10 +30,6 @@ const TIMEOUT_MESSAGE =
 const LOGIN_INSTRUCTIONS =
   "Complete Kiro authentication in the browser window that just opened. Waiting for login..."
 const ALREADY_AUTHENTICATED_INSTRUCTIONS = "Already authenticated with Kiro CLI."
-// consent "yes" no longer writes any host config file (deleted v1 behavior):
-// it only surfaces manual global cli.json guidance (plural `plugins`, per v2 config)
-const SIDEBAR_INSTRUCTIONS =
-  'To enable the Kiro credits sidebar, add "opencode-kiro" to the "plugins" array in your global cli.json and restart opencode.'
 
 // login-flow resources tracked for task 07's aggregated cleanup: the spawned
 // kiro-cli child, the poll timer, the pending-poll canceller (settles the
@@ -97,10 +93,6 @@ type OAuthAuthorization = {
   readonly callback: Promise<Credential.OAuth>
 }
 
-function withSidebarGuidance(instructions: string, inputs: Record<string, string>): string {
-  return inputs["sidebar"] === "yes" ? `${instructions}\n\n${SIDEBAR_INSTRUCTIONS}` : instructions
-}
-
 // poll verifyAuth() every 2s for up to 120s (v1 semantics). Resolves with the
 // credential on success; rejects on timeout with manual-login guidance; rejects
 // with a cancellation error when the plugin is disposed mid-poll.
@@ -147,10 +139,7 @@ function pollForLogin(
 // 4. success         -> kill child, resolve Credential.OAuth
 // 5. timeout/cancel/disposal -> kill child, clear timer; timeout carries
 //    manual-login guidance
-async function authorize(
-  inputs: Record<string, string>,
-  resources: AuthResources,
-): Promise<OAuthAuthorization> {
+async function authorize(resources: AuthResources): Promise<OAuthAuthorization> {
   const { verifyAuth } = await import("kiro-acp-ai-provider")
   const status = verifyAuth()
 
@@ -159,7 +148,7 @@ async function authorize(
   if (status.authenticated) {
     return {
       url: KIRO_DOCS_URL,
-      instructions: withSidebarGuidance(ALREADY_AUTHENTICATED_INSTRUCTIONS, inputs),
+      instructions: ALREADY_AUTHENTICATED_INSTRUCTIONS,
       mode: "auto",
       callback: Promise.resolve(kiroCredential()),
     }
@@ -174,7 +163,7 @@ async function authorize(
 
   return {
     url: KIRO_DOCS_URL,
-    instructions: withSidebarGuidance(LOGIN_INSTRUCTIONS, inputs),
+    instructions: LOGIN_INSTRUCTIONS,
     mode: "auto",
     callback: pollForLogin(verifyAuth, resources),
   }
@@ -191,25 +180,19 @@ export async function registerAuth(
     draft.update(KIRO_INTEGRATION_ID, (integration) => {
       integration.name = KIRO_INTEGRATION_NAME
     })
+    // forms shape per installed d.ts IntegrationOAuthMethodRegistration
+    // (dist/promise/integration.d.ts:43-49) — the v1-era select-question API
+    // was deleted upstream (2026-08-23 re-pin) and the sidebar consent
+    // question is gone with it. Our flow needs no form fields, so the
+    // optional `form` is omitted and the Form.Answer argument is unused.
     draft.method.update({
       integrationID: KIRO_INTEGRATION_ID,
       method: {
         id: KIRO_OAUTH_METHOD_ID,
         type: "oauth",
         label: KIRO_OAUTH_METHOD_LABEL,
-        prompts: [
-          {
-            type: "select",
-            key: "sidebar",
-            message: "Enable the Kiro credits sidebar?",
-            options: [
-              { label: "Yes", value: "yes", hint: "shows manual cli.json setup steps" },
-              { label: "No", value: "no" },
-            ],
-          },
-        ],
       },
-      authorize: (inputs) => authorize(inputs, resources),
+      authorize: async (_answer) => authorize(resources),
       // no refresh callback: kiro-cli owns credential storage and refresh
     })
   })
