@@ -10,8 +10,9 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest"
 // Built-package smoke tests: run `npm run build` first. Covers exports
 // resolution, discoverable metadata, exact host-sensitive pins, the installed
 // plugin tarball's exports layout, emitted artifacts, the { id, setup } module
-// contracts, idempotent cleanup, module-kind isolation, and host-package
-// externalization.
+// contracts, idempotent cleanup, module-kind isolation, host-package
+// externalization, and repository hygiene (no internal working notes in the
+// tree).
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -441,6 +442,126 @@ describe("packaging and docs invariants", () => {
         expect(content, `${file} floating range for ${name}`).not.toMatch(new RegExp(`\`${name}\`\\s*\\|\\s*\`[~^*]`))
       }
     }
+  })
+})
+
+// --- repository hygiene ---
+
+/**
+ * Word literals below are written with a `~` inside them and joined at runtime.
+ * The hygiene pattern would otherwise match its own source in this file — the
+ * splitter keeps the forbidden spellings out of the tree while still letting a
+ * reader see what is banned.
+ */
+const spell = (split: string): string => split.replaceAll("~", "")
+
+/**
+ * Internal working vocabulary that must not leak into shipped sources or tests:
+ * planning shorthand (task/item/phase/workstream numbers), review-note tone
+ * words, first-person prose, names of internal record files, and line-number
+ * citations that rot the moment a file changes. Mirrors the tidy-up sweep's
+ * acceptance search so the tree cannot drift back.
+ */
+const JARGON_PATTERN = new RegExp(
+  [
+    "\\(ta~sk \\d+\\)",
+    "ta~sk \\d\\d",
+    "R~eq \\d",
+    "It~em \\d",
+    "It~ems \\d",
+    "be~ta\\.\\d at~om",
+    "\\bat~om\\b",
+    "\\bB~3\\b",
+    "\\bB~2\\b",
+    "Ph~ase \\d",
+    "W~S-\\d",
+    "\\b4~b\\b",
+    "\\b5~b\\b",
+    "wit~ness",
+    "ha~nd gu~ard",
+    "para~noia",
+    "be~lt-and",
+    "got~cha",
+    "\\bw~e\\b",
+    "HOST_E2E~_REPORT",
+    "migra~tion doc",
+    "pre-pub~lish amend~ment",
+    ":\\d+-\\d+\\)",
+    "\\.ts:\\d+",
+  ]
+    .map(spell)
+    .join("|"),
+  "g",
+)
+
+/**
+ * Justified exceptions to the jargon pattern, keyed by repo-relative file and
+ * the exact matched text. Each entry needs a one-line reason so the exception
+ * is auditable here rather than hidden in a comment elsewhere. Currently empty.
+ */
+const JARGON_ALLOWLIST: ReadonlyArray<{ file: string; match: string; reason: string }> = []
+
+/** Internal record files that used to live at the repo root; they now live outside the tree. */
+const ROOT_LEDGER_FILES = ["HOST_E2E~_REPORT.md", "OPENCODE_V2_MIGRATION.md", "PINNED_VERSIONS.md"].map(spell)
+const ROOT_LEDGER_GLOB = /^RELEASE_NOTES_.*\.md$/
+
+/** Repo-relative paths of every `.ts` file under `dir`, sorted for stable failure output. */
+const listTypeScriptFiles = async (dir: string): Promise<string[]> => {
+  const entries = await readdir(join(ROOT, dir), { recursive: true })
+  return entries
+    .filter((entry) => entry.endsWith(".ts"))
+    .map((entry) => join(dir, entry))
+    .sort()
+}
+
+describe("repository hygiene", () => {
+  test("src and test files carry no workflow jargon", async () => {
+    const files = [...(await listTypeScriptFiles("src")), ...(await listTypeScriptFiles("test"))]
+    expect(files.length).toBeGreaterThan(0)
+
+    const hits: Array<{ file: string; line: number; match: string }> = []
+    for (const file of files) {
+      const content = await readFile(join(ROOT, file), "utf8")
+      for (const found of content.matchAll(JARGON_PATTERN)) {
+        const line = content.slice(0, found.index).split("\n").length
+        hits.push({ file, line, match: found[0] })
+      }
+    }
+
+    const allowed = (hit: { file: string; match: string }): boolean =>
+      JARGON_ALLOWLIST.some((entry) => entry.file === hit.file && entry.match === hit.match)
+
+    // every hit must be an enumerated exception; report as file:line so a
+    // failure points straight at the offending text
+    const unexpected = hits.filter((hit) => !allowed(hit)).map((hit) => `${hit.file}:${hit.line}: ${hit.match}`)
+    expect(unexpected).toEqual([])
+
+    // and every exception must still be needed, so the allowlist cannot go stale
+    const stale = JARGON_ALLOWLIST.filter(
+      (entry) => !hits.some((hit) => hit.file === entry.file && hit.match === entry.match),
+    )
+    expect(stale).toEqual([])
+  })
+
+  test("repo root carries no workflow ledger files", async () => {
+    const rootEntries = await readdir(ROOT)
+
+    const ledgers = rootEntries.filter((name) => ROOT_LEDGER_FILES.includes(name) || ROOT_LEDGER_GLOB.test(name))
+
+    expect(ledgers).toEqual([])
+  })
+
+  test("CHANGELOG has a section for the current version", async () => {
+    const changelog = await readFile(join(ROOT, CHANGELOG_DOC), "utf8")
+
+    // the heading must open a line (Keep-a-Changelog `## [version]`); a date or
+    // an "Unreleased" marker may follow while the version is still unpublished
+    const heading = `## [${PKG_VERSION}]`
+    const headingLines = changelog.split("\n").filter((line) => line.startsWith(heading))
+    expect(headingLines, `${CHANGELOG_DOC} heading "${heading}"`).toHaveLength(1)
+
+    // and the section carries body text, not just a bare heading
+    expect(changelogSection(changelog, PKG_VERSION).trim().length).toBeGreaterThan(heading.length)
   })
 })
 
