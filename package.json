@@ -38,6 +38,9 @@
   "engines": {
     "node": ">=20"
   },
+  "publishConfig": {
+    "tag": "beta"
+  },
   "peerDependencies": {
     "@opencode-ai/plugin": "0.0.0-dev-18686"
   },

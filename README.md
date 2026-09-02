@@ -3,10 +3,9 @@
 > ⚠️ **Experimental prerelease** — `0.5.0-beta.3` targets the **unreleased OpenCode v2**
 > plugin contract at a pinned snapshot. It does **not** work with OpenCode v1.
 > v1 users: stay on **`opencode-kiro@0.4.0`** (the `main` branch / npm `latest` line,
-> which remains the supported stable release). See
-> [RELEASE_NOTES_0.5.0-beta.3.md](./RELEASE_NOTES_0.5.0-beta.3.md) and
-> [PINNED_VERSIONS.md](./PINNED_VERSIONS.md) for exact pins and the tested OpenCode SHA.
-> No OpenCode v2 release date is known or claimed here.
+> which remains the supported stable release). See [CHANGELOG.md](./CHANGELOG.md) and
+> [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md) for exact pins and the tested
+> OpenCode SHA. No OpenCode v2 release date is known or claimed here.
 
 The ACP-compliant [Kiro](https://kiro.dev) plugin for [opencode](https://opencode.ai).
 
@@ -40,7 +39,7 @@ This prerelease is built and tested against **one pinned OpenCode v2 snapshot**:
 | `@opencode-ai/plugin` | `0.0.0-dev-18686` (exact) |
 | Package version | `0.5.0-beta.3` |
 
-Full pin table and verification evidence: [PINNED_VERSIONS.md](./PINNED_VERSIONS.md).
+Full pin table and verification steps: [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md).
 There is no `engines.opencode` constraint — the v2 host has no stable semver yet; the
 tested SHA above is the compatibility target. Other v2 snapshots may or may not work.
 
@@ -63,8 +62,8 @@ array (plural) of your OpenCode config (`opencode.json`, project or global):
 }
 ```
 
-> ⚠️ **Always pin the exact version, as above.** The host now background-auto-refreshes
-> UNPINNED npm plugin packages to whatever the registry serves — a bare `"opencode-kiro"`
+> ⚠️ **Always pin the exact version, as above.** The host background-auto-refreshes
+> unpinned npm plugin packages to whatever the registry serves, so a bare `"opencode-kiro"`
 > spec can silently move you off the tested build. Use the exact
 > `opencode-kiro@0.5.0-beta.3` spec.
 
@@ -85,8 +84,7 @@ This loads the server entry (`./server` export): auth, model discovery, and prov
 ownership. The server plugin declares **`tui: true`**, so the host TUI **auto-loads the
 package's `./tui` entrypoint by itself** — the sidebar credits box and the prompt footer
 credits chip appear with no further configuration. **No `cli.json` TUI entry is
-needed.** (The beta.1 two-file setup is obsolete: if you added `"opencode-kiro"` to
-your global `cli.json` `plugins` array for beta.1, remove it.)
+needed.**
 
 ### Disabling
 
@@ -148,10 +146,8 @@ Select the **Kiro** integration, then the **Kiro CLI Login** method:
   Complete the login there; the plugin polls for up to 120 seconds and stores a minimal
   credential record when kiro-cli reports success.
 
-There is no configuration prompt during login anymore: the beta.1
-"Enable the Kiro credits sidebar?" consent select was removed (upstream deleted the
-prompts API in favor of forms — and the sidebar no longer needs consent-driven config,
-since `tui: true` auto-loads it).
+There is no configuration prompt during login; the sidebar and footer credits surfaces
+auto-load from the single `plugins` entry.
 
 If the flow times out, authenticate directly with kiro-cli (`kiro-cli login`) and run
 `opencode auth login` again; the fast path then completes immediately.
@@ -196,7 +192,7 @@ plugin renders two surfaces:
 - a Kiro credits box in the sidebar (`sidebar.content` claim), showing the session's
   live credits total and unit
 - a compact credits chip in the prompt footer row beside the host cost/context
-  display (`prompt.footer.status` claim, v1 placement restored) with the same total
+  display (`prompt.footer.status` claim) with the same total
 
 Both are additive `append` claims — they compose with the host's built-in content and
 never replace it — and both pick up the active theme's text tokens (feature-detected;
@@ -208,11 +204,11 @@ The only configuration needed is the single `plugins` entry from
 [Install](#install-and-configure) — the TUI half auto-loads via `tui: true`.
 
 Durable credits are read straight from host message state (the host persists provider
-state on text end — fixed upstream since beta.2). While a turn is still streaming,
+state on text end). While a turn is still streaming,
 credits for just-ended text are picked up live through a transient overlay that works
 around a host reducer bug at the pinned snapshot (the live event path still drops
 provider state); once durable state arrives it is authoritative and nothing is
-double-counted. See the release notes for details.
+double-counted. See [CHANGELOG.md](./CHANGELOG.md) for details.
 
 ## Known limitations (prerelease)
 
@@ -220,7 +216,7 @@ double-counted. See the release notes for details.
   upstream, but the live `session.text.ended` reducer still drops provider state at
   the tested SHA, so in-turn updates come from the plugin's transient overlay
   (durable state always wins on reconcile). See
-  [Credits in the TUI](#credits-in-the-tui) and the release notes.
+  [Credits in the TUI](#credits-in-the-tui) and [CHANGELOG.md](./CHANGELOG.md).
 - **Credits render in the TUI only.** Every other cost surface (ACP clients, web,
   desktop, share pages, CLI cost output) shows $0.00 for Kiro sessions because the
   catalog declares Kiro's per-token `cost` as 0 (subscription-metered, no per-token
@@ -269,7 +265,6 @@ double-counted. See the release notes for details.
 | `kiro` provider not showing in `opencode models` | Run `opencode auth login` first: models are discovered after auth. If the loaded catalog lacks a `kiro` entry, the plugin self-registers a minimal fallback during discovery. |
 | Path install rejected (`must export id`) | Use the `name@file:<absolute tarball path>` form after `npm run build && npm pack` in your checkout (both entry modules export ids). |
 | Provider visible but runs fail | The provider can be selectable before any credential exists. Run `opencode auth login` first. |
-| Models don't appear after mid-session login (beta.2) | beta.2 filters model discovery on the removed `integration.connection.updated` event, so on current hosts login/logout reactivity is silently dead (a restart still picks the state up). Upgrade the `plugins` entry to `opencode-kiro@0.5.0-beta.3`, which dual-listens on the new `credential.updated` / `credential.switched` names, and restart opencode. See [RELEASE_NOTES_0.5.0-beta.3.md](./RELEASE_NOTES_0.5.0-beta.3.md) → "Upgrading from beta.2". |
 | Worked yesterday, broken today | This prerelease targets one pinned OpenCode snapshot (see [Compatibility](#compatibility)). If your OpenCode build moved past the tested SHA, the v2 plugin surface may have changed underneath it. The other cause is an **unpinned** `plugins` entry (a bare `"opencode-kiro"`): the host background-auto-refreshes unpinned npm plugin packages, so the plugin itself can move off the tested build without you changing anything — pin the exact `opencode-kiro@0.5.0-beta.3` spec. |
 
 ## Legacy: v1 / OpenCode v1 users (`0.4.0`)

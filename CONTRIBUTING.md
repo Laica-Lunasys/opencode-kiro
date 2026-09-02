@@ -135,3 +135,18 @@ Examples:
 
 - Plain hyphens only. No em-dashes or en-dashes anywhere in code or docs.
 - Match the existing code and README tone: terse and practical.
+
+## Releasing
+
+Maintainer notes for the `0.5.0` prerelease line (branch `opencode-v2`).
+
+- **Two release lines, two dist-tags.** `latest` must keep pointing at `0.4.0`, the OpenCode v1 stable line on `main`. Prereleases publish only under the `beta` dist-tag; `package.json` sets `publishConfig.tag` to `beta` so a bare `npm publish` cannot move `latest`. Still pass the tag explicitly:
+
+  ```bash
+  npm publish --tag beta
+  ```
+
+- **Exact pins only.** `@opencode-ai/plugin` (dev and peer), `@opentui/solid`, `solid-js`, and `kiro-acp-ai-provider` are pinned to exact version strings, never dist-tags or ranges. When re-pinning, verify the installed `@opencode-ai/plugin` tarball matches the tested OpenCode commit (exports map, TUI slot types, event union) and keep `docs/COMPATIBILITY.md`, the current `CHANGELOG.md` section, and the README in step; `test/scaffold.test.ts` fails on any drift between them and `package.json`.
+- **Before publishing.** Run `npm run typecheck` and `npm test` (the suite includes a real `npm pack` and a hermetic install), then run the built tarball against the tested OpenCode commit end to end (auth, model discovery, effort on the wire, credits surfaces). Fill the version's `CHANGELOG.md` section and update `docs/COMPATIBILITY.md` before the pack, since README and docs are part of the release tree.
+- **After publishing.** Confirm `npm view opencode-kiro dist-tags` shows `beta` on the new version and `latest` still on `0.4.0`, and that the registry `dist.shasum` matches the pre-flight `npm pack` shasum.
+- **No GA claims.** Stable promotion (`0.5.0`) requires a confirmed OpenCode v2 compatibility target, mutually published host and plugin package versions, the upstream fix for the live text-ended credits path, and upgrade testing from `0.4.0`. Do not promote because a prerelease compiles against one snapshot, and do not claim an OpenCode v2 release date.

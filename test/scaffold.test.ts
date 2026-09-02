@@ -38,8 +38,21 @@ const readPkg = async (): Promise<PackageJson> =>
 /** the package version, read once from package.json — the single source every version-bearing assertion derives from */
 const PKG_VERSION = (await readPkg()).version ?? ""
 
-/** the release-notes file for the current version */
-const RELEASE_NOTES_FILE = `RELEASE_NOTES_${PKG_VERSION}.md`
+/** docs that mirror the pins: the compatibility table and the changelog (current version's section) */
+const COMPATIBILITY_DOC = join("docs", "COMPATIBILITY.md")
+const CHANGELOG_DOC = "CHANGELOG.md"
+
+/**
+ * The Keep-a-Changelog section for `version`: from its `## [version]` heading up
+ * to the next `## ` heading (or end of file). Empty string when absent.
+ */
+const changelogSection = (changelog: string, version: string): string => {
+  const heading = `## [${version}]`
+  const start = changelog.indexOf(heading)
+  if (start === -1) return ""
+  const next = changelog.indexOf("\n## ", start + heading.length)
+  return next === -1 ? changelog.slice(start) : changelog.slice(start, next)
+}
 
 /** plugin module shape: `{ id, setup }` with a callable setup. */
 interface PluginModule {
@@ -338,22 +351,28 @@ describe("packaging and docs invariants", () => {
     expect(paths.some((path) => path === "dist/tui.d.ts")).toBe(true)
   }, 60_000)
 
-  test("pins consistent across package.json / PINNED_VERSIONS / RELEASE_NOTES / README", async () => {
+  test("pins consistent across package.json / docs/COMPATIBILITY / CHANGELOG / README", async () => {
     const pkg = await readPkg()
     const pins = await hostSensitivePins()
     // `fullPinTable: true` docs must mirror every host-sensitive pin row; README
     // deliberately carries only the plugin-API pin + package version + tested SHA
-    // (it defers the full table to PINNED_VERSIONS.md), so it is checked against
+    // (it defers the full table to docs/COMPATIBILITY.md), so it is checked against
     // exactly those strings — enough to fail the suite on a stale README pin.
+    // The changelog is checked on the CURRENT version's section only: older
+    // sections legitimately carry the pins they shipped with.
+    const changelog = await readFile(join(ROOT, CHANGELOG_DOC), "utf8")
+    const currentSection = changelogSection(changelog, PKG_VERSION)
+    expect(currentSection, `${CHANGELOG_DOC} has a "## [${PKG_VERSION}]" section`).not.toBe("")
+
     const docs: Array<{ label: string; content: string; fullPinTable: boolean }> = [
       {
-        label: "PINNED_VERSIONS.md",
-        content: await readFile(join(ROOT, "PINNED_VERSIONS.md"), "utf8"),
+        label: COMPATIBILITY_DOC,
+        content: await readFile(join(ROOT, COMPATIBILITY_DOC), "utf8"),
         fullPinTable: true,
       },
       {
-        label: RELEASE_NOTES_FILE,
-        content: await readFile(join(ROOT, RELEASE_NOTES_FILE), "utf8"),
+        label: `${CHANGELOG_DOC} [${PKG_VERSION}]`,
+        content: currentSection,
         fullPinTable: true,
       },
       { label: "README.md", content: await readFile(join(ROOT, "README.md"), "utf8"), fullPinTable: false },
@@ -404,10 +423,14 @@ describe("packaging and docs invariants", () => {
     }
   })
 
-  test("PINNED_VERSIONS and RELEASE_NOTES carry the tested opencode SHA and no floating tags", async () => {
-    for (const file of ["PINNED_VERSIONS.md", RELEASE_NOTES_FILE]) {
-      const content = await readFile(join(ROOT, file), "utf8")
+  test("docs/COMPATIBILITY and the current CHANGELOG section carry the tested opencode SHA and no floating tags", async () => {
+    const changelog = await readFile(join(ROOT, CHANGELOG_DOC), "utf8")
+    const docs: Array<[label: string, content: string]> = [
+      [COMPATIBILITY_DOC, await readFile(join(ROOT, COMPATIBILITY_DOC), "utf8")],
+      [`${CHANGELOG_DOC} [${PKG_VERSION}]`, changelogSection(changelog, PKG_VERSION)],
+    ]
 
+    for (const [file, content] of docs) {
       expect(content, `${file} tested SHA`).toContain(TESTED_OPENCODE_SHA)
 
       // no `pkg@latest` / `pkg@next` / `pkg@beta` / `pkg@dev` install specifier anywhere
