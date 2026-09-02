@@ -424,6 +424,53 @@ describe("packaging and docs invariants", () => {
     }
   })
 
+  test("README documents plugin options with the npm-channel-only caveat", async () => {
+    const readme = await readFile(join(ROOT, "README.md"), "utf8")
+
+    // the options table lists every accepted key with its default: a row whose
+    // first cell is the backticked name and whose third cell is the backticked default
+    const options: Array<[name: string, defaultValue: string]> = [
+      ["agent", '"opencode"'],
+      ["mcpTimeout", "45"],
+      ["discover", "true"],
+    ]
+    for (const [name, defaultValue] of options) {
+      const row = new RegExp(`^\\| \`${name}\` \\|[^|\\n]*\\| \`${defaultValue}\` \\|`, "m")
+      expect(readme, `options table row for ${name} with default ${defaultValue}`).toMatch(row)
+    }
+
+    // The host hands `options` only to plugins it installed from npm; bundled or
+    // built-in loads receive an empty options object, so the defaults always
+    // apply there. The README must say so (wording may shift; the caveat may not
+    // vanish) and must show the object-form entry with its empty `options`.
+    expect(readme).toMatch(/npm channel only/i)
+    expect(readme).toMatch(/"options":\s*\{\}/)
+
+    // the working directory is derived per location, never user-supplied
+    expect(readme).toMatch(/no `cwd` option/i)
+  })
+
+  test("README options snippet uses the plural plugins config", async () => {
+    const readme = await readFile(join(ROOT, "README.md"), "utf8")
+    const codeBlocks = readme.match(/```[\s\S]*?```/g) ?? []
+
+    // the options example must ride the real config shape: an object entry
+    // inside the plural `plugins` array, carrying at least one option key
+    const optionKeys = ['"agent"', '"mcpTimeout"', '"discover"']
+    const optionsSnippets = codeBlocks.filter(
+      (block) =>
+        block.includes('"plugins": [') &&
+        block.includes('"options"') &&
+        optionKeys.some((key) => block.includes(key)),
+    )
+
+    expect(optionsSnippets.length).toBeGreaterThan(0)
+    // and no snippet ever attaches options to a legacy singular `plugin` array
+    for (const block of optionsSnippets) {
+      expect(block).not.toContain('"plugin": [')
+    }
+  })
+
   test("docs/COMPATIBILITY and the current CHANGELOG section carry the tested opencode SHA and no floating tags", async () => {
     const changelog = await readFile(join(ROOT, CHANGELOG_DOC), "utf8")
     const docs: Array<[label: string, content: string]> = [
