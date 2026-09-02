@@ -4,8 +4,8 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execFile } from "node:child_process"
 import type { Plugin } from "@opencode-ai/plugin"
-import type { ModelWithEfforts } from "kiro-acp-ai-provider"
-import { createKiroAcp, listModels, verifyAuth } from "kiro-acp-ai-provider"
+import type { AuthStatus, ModelWithEfforts } from "kiro-acp-ai-provider"
+import { createKiroAcp, listModels, verifyAuthAsync } from "kiro-acp-ai-provider"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import serverPlugin from "../src/server"
 
@@ -16,9 +16,11 @@ import serverPlugin from "../src/server"
 
 // Hermetic: the SDK is mocked so no kiro-cli is ever spawned and no network is
 // touched; child_process.execFile is mocked so the login flow gets a fake
-// killable child; login poll/timeout tests use fake timers.
+// killable child; login poll/timeout tests use fake timers. The mock exposes
+// ONLY the async probe (beta.4 Item 3): production must never reach for the
+// sync `verifyAuth` again, and a regression would fail here as a missing export.
 vi.mock("kiro-acp-ai-provider", () => ({
-  verifyAuth: vi.fn(),
+  verifyAuthAsync: vi.fn(),
   listModels: vi.fn(),
   createKiroAcp: vi.fn(),
 }))
@@ -26,7 +28,7 @@ vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }))
 
-const mockVerifyAuth = vi.mocked(verifyAuth)
+const mockVerifyAuthAsync = vi.mocked(verifyAuthAsync)
 const mockListModels = vi.mocked(listModels)
 const mockCreateKiroAcp = vi.mocked(createKiroAcp)
 const mockExecFile = vi.mocked(execFile)
@@ -356,8 +358,8 @@ const EXPECTED_CREDENTIAL = {
 
 beforeEach(() => {
   sdkInstances = []
-  mockVerifyAuth.mockReset()
-  mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
+  mockVerifyAuthAsync.mockReset()
+  mockVerifyAuthAsync.mockResolvedValue({ installed: true, authenticated: true })
   mockListModels.mockReset()
   mockListModels.mockResolvedValue([])
   mockCreateKiroAcp.mockReset()
@@ -417,7 +419,7 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
   })
 
   test("cli absent fails with install guidance, no spawn, no credential", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: false, authenticated: false })
+    mockVerifyAuthAsync.mockResolvedValue({ installed: false, authenticated: false })
     const h = makeMockContext()
     const { cleanup, authorize } = await setupWithAuthorize(h)
 
@@ -428,7 +430,7 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
   })
 
   test("already authenticated resolves immediately with Credential.OAuth", async () => {
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: true })
+    mockVerifyAuthAsync.mockResolvedValue({ installed: true, authenticated: true })
     const h = makeMockContext()
     const { cleanup, authorize } = await setupWithAuthorize(h)
 
@@ -444,7 +446,7 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
   test("authorize(answer) spawns kiro-cli and polls to success", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
     let authenticated = false
-    mockVerifyAuth.mockImplementation(() => ({ installed: true, authenticated }))
+    mockVerifyAuthAsync.mockImplementation(async () => ({ installed: true, authenticated }))
     const child = makeFakeChild()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockExecFile.mockReturnValue(child as any)
@@ -481,13 +483,16 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true })
     try {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
-      mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
+      mockVerifyAuthAsync.mockResolvedValue({ installed: true, authenticated: false })
 
       const h = makeMockContext()
       const { cleanup, authorize } = await setupWithAuthorize(h)
 
+      // no hand guard on the callback: the production guard (auth.ts
+      // authorize) absorbs the cancellation raised by cleanup below — vitest
+      // fails on unhandled rejections, so this test is itself a witness
       const authorization = await authorize({})
-      authorization.callback.catch(() => {}) // cancelled by cleanup below
+      expect(authorization.mode).toBe("auto")
 
       expect(mockExecFile).toHaveBeenCalledWith("kiro-cli", ["login"], { shell: true })
 
@@ -499,7 +504,7 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
 
   test("timeout kills child and carries manual kiro-cli login guidance", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
+    mockVerifyAuthAsync.mockResolvedValue({ installed: true, authenticated: false })
     const child = makeFakeChild()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockExecFile.mockReturnValue(child as any)
@@ -521,7 +526,7 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
 
   test("disposal mid-poll kills child, settles the attempt, clears timers", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
+    mockVerifyAuthAsync.mockResolvedValue({ installed: true, authenticated: false })
     const child = makeFakeChild()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockExecFile.mockReturnValue(child as any)
@@ -1051,14 +1056,16 @@ describe("aisdk hook + lifecycle (task 07)", () => {
 
   test("cleanup is idempotent and complete across auth, discovery and aisdk", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
-    mockVerifyAuth.mockReturnValue({ installed: true, authenticated: false })
+    mockVerifyAuthAsync.mockResolvedValue({ installed: true, authenticated: false })
 
     const h = makeMockContext()
     const { cleanup, authorize } = await setupWithAuthorize(h)
 
-    // put a login poll in flight so cleanup has timers + a child to release
+    // put a login poll in flight so cleanup has timers + a child to release;
+    // no hand guard — the production callback guard absorbs the disposal
+    // rejection (vitest would fail the run on an unhandled rejection)
     const authorization = await authorize({})
-    authorization.callback.catch(() => {}) // settled by disposal
+    expect(authorization.mode).toBe("auto")
     expect(vi.getTimerCount()).toBeGreaterThan(0)
 
     const first = cleanup()
@@ -1430,3 +1437,386 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// beta.4 Items 3+4: async auth probe + login-callback guard
+// ---------------------------------------------------------------------------
+
+// New behavior locks for Items 3 (adoption) + 4 (Reqs 4/6/7). Rationale:
+// - Blocking bug: the sync SDK `verifyAuth()` runs 2x execFileSync (kiro-cli
+//   `--version` + `whoami`, 10s timeouts each); polled every 2s it froze the
+//   host event loop roughly every 3rd tick. src/server/auth.ts now uses
+//   `verifyAuthAsync()` exclusively (SDK contract: identical AuthStatus,
+//   shared 5s memo, never rejects) at BOTH call sites — authorize entry and
+//   the poll tick.
+// - Req 6 guard: `authorize` binds `const callback = pollForLogin(...)`,
+//   guards the DERIVED promise (`callback.catch(() => {})`) and returns the
+//   ORIGINAL — an abandoned login can no longer surface as an unhandled
+//   rejection, while the host still observes timeout/cancel on the callback.
+// - Async-tick hazard: disposal can cancel the attempt while a probe is in
+//   flight; the tick must then neither re-arm the timer (leak after cleanup)
+//   nor settle the promise a second time.
+// - Req 7: the credential marker stays `expires: 0` (EXPECTED_CREDENTIAL).
+describe("async auth probe + callback guard (items 3+4)", () => {
+  const UNAUTHENTICATED: AuthStatus = { installed: true, authenticated: false }
+  const AUTHENTICATED: AuthStatus = { installed: true, authenticated: true }
+  const TIMEOUT_GUIDANCE =
+    /^Kiro authentication timed out\. Run `kiro-cli login` manually, then re-run `opencode auth login`\.$/
+
+  /** manually-controlled probe promise (mid-probe disposal lock) */
+  function deferredStatus() {
+    let resolve!: (status: AuthStatus) => void
+    const promise = new Promise<AuthStatus>((r) => (resolve = r))
+    return { promise, resolve }
+  }
+
+  test("login succeeds via async probe without blocking semantics", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    // authorize entry + 1st tick unauthenticated, then authenticated
+    mockVerifyAuthAsync
+      .mockResolvedValueOnce(UNAUTHENTICATED)
+      .mockResolvedValueOnce(UNAUTHENTICATED)
+      .mockResolvedValue(AUTHENTICATED)
+    const child = makeFakeChild()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockExecFile.mockReturnValue(child as any)
+
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
+
+    const authorization = await authorize({})
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
+    const credential = expect(authorization.callback).resolves.toEqual(EXPECTED_CREDENTIAL)
+
+    await vi.advanceTimersByTimeAsync(2_000) // 1st poll: still unauthenticated
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(2)
+    expect(child.kill).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(2_000) // 2nd poll: authenticated
+    await credential // Req 7: `expires: 0` marker, no synthetic expiry
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(3)
+    expect(child.kill).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    // non-blocking witness: every probe call — entry and ticks — was the
+    // async variant (returned a Promise the flow awaited), never a sync spawn
+    for (const result of mockVerifyAuthAsync.mock.results) {
+      expect(result.value).toBeInstanceOf(Promise)
+    }
+
+    await cleanup()
+  })
+
+  test("abandoned login raises no unhandled rejection", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    mockVerifyAuthAsync.mockResolvedValue(UNAUTHENTICATED) // never logs in
+
+    // belt-and-braces on top of vitest's own failure-on-unhandled-rejection:
+    // a scoped listener captures anything that leaks during this test
+    const captured: unknown[] = []
+    const onUnhandled = (reason: unknown) => {
+      captured.push(reason)
+    }
+    process.on("unhandledRejection", onUnhandled)
+    try {
+      const h = makeMockContext()
+      const { cleanup, authorize } = await setupWithAuthorize(h)
+
+      // NO `.catch` attached by this test before the timeout fires
+      const authorization = await authorize({})
+
+      await vi.advanceTimersByTimeAsync(121_000) // > 120s poll budget → rejects
+      await flush() // let Node run its unhandled-rejection sweep
+      expect(captured).toEqual([])
+      expect(vi.getTimerCount()).toBe(0)
+
+      // second half of Req 6: the ORIGINAL promise was returned, so a late
+      // consumer still observes the rejection (a swallowed promise would resolve)
+      await expect(authorization.callback).rejects.toThrow(/`kiro-cli login`/)
+
+      await cleanup()
+    } finally {
+      process.off("unhandledRejection", onUnhandled)
+    }
+  })
+
+  test("returned callback is the original (rejection observable)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    mockVerifyAuthAsync.mockResolvedValue(UNAUTHENTICATED)
+    const child = makeFakeChild()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockExecFile.mockReturnValue(child as any)
+
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
+
+    const authorization = await authorize({})
+    // a consumer attached up-front: `callback.catch(() => {})` as the RETURNED
+    // value would resolve to undefined here instead of rejecting
+    const rejection = expect(authorization.callback).rejects.toThrow(TIMEOUT_GUIDANCE)
+
+    await vi.advanceTimersByTimeAsync(121_000)
+
+    await rejection
+    expect(child.kill).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    await cleanup()
+  })
+
+  test("disposal mid-probe: no re-arm, no double-settle", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const probe = deferredStatus()
+    // authorize entry resolves immediately (unauthenticated → spawn + poll);
+    // the first TICK gets the manually-controlled pending probe
+    mockVerifyAuthAsync.mockResolvedValueOnce(UNAUTHENTICATED).mockImplementation(() => probe.promise)
+    const child = makeFakeChild()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockExecFile.mockReturnValue(child as any)
+
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
+
+    const authorization = await authorize({})
+    const rejection = expect(authorization.callback).rejects.toThrow(/cancelled/)
+
+    await vi.advanceTimersByTimeAsync(2_000) // tick fires and is now IN FLIGHT
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0) // timer cleared at tick start, not yet re-armed
+
+    await cleanup() // disposal while the probe is pending → cancel
+    await rejection
+    expect(child.kill).toHaveBeenCalledTimes(1)
+
+    // the LATE probe result arrives UNAUTHENTICATED with budget left — exactly
+    // the input that would make an unguarded tick re-arm the 2s timer AFTER
+    // cleanup (leaked timer) and later time out into a second settle. The
+    // guarded tick must bail: cancelPoll was disarmed by the disposal.
+    probe.resolve(UNAUTHENTICATED)
+    await flush()
+    expect(vi.getTimerCount()).toBe(0)
+
+    // no leaked timer means no further probes ever run
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(2)
+    expect(child.kill).toHaveBeenCalledTimes(1)
+    // and the callback stays settled as cancelled (never re-settled as timeout)
+    await expect(authorization.callback).rejects.toThrow(/cancelled/)
+  })
+
+  test("probe cadence: memo-friendly 2s ticks up to 120s", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    mockVerifyAuthAsync.mockResolvedValue(UNAUTHENTICATED)
+
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
+
+    const authorization = await authorize({})
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(1) // authorize entry probe
+    const rejection = expect(authorization.callback).rejects.toThrow(TIMEOUT_GUIDANCE)
+
+    // cadence constants (auth.ts POLL_INTERVAL_MS / MAX_WAIT_MS) unchanged by
+    // the async tick: one probe per 2s tick, SDK 5s memo absorbs ~2 of every 3
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(1) // nothing before 2s
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(2) // 1st tick at exactly 2s
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(3) // 2nd tick at 4s
+
+    // ticks at 6s..120s: the 60th tick (t=120s) observes elapsed >= 120s → timeout
+    await vi.advanceTimersByTimeAsync(116_000)
+    await rejection
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(61) // 1 entry + 60 ticks
+    expect(vi.getTimerCount()).toBe(0)
+
+    // no probe past the budget
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(61)
+
+    await cleanup()
+  })
+
+  // Task 09 live-smoke defect (fix iteration 1): connect → abandon → reconnect
+  // left a `kiro-cli login` child alive with no owner. `state.auth` is ONE
+  // shared AuthResources; the second authorize() overwrote `child`/`cancelPoll`
+  // without releasing the first attempt, orphaning its process from the
+  // plugin's bookkeeping. Negative witness: without the supersede step the
+  // first child is never killed (its poll now owns the SECOND child), so
+  // `firstChild.kill` toHaveBeenCalledTimes(1) is the discriminating assertion.
+  test("second authorize() while pending supersedes the first: one child alive at a time", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    let authenticated = false
+    mockVerifyAuthAsync.mockImplementation(async () => ({ installed: true, authenticated }))
+    const firstChild = makeFakeChild()
+    const secondChild = makeFakeChild()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockExecFile.mockReturnValueOnce(firstChild as any).mockReturnValueOnce(secondChild as any)
+
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
+
+    // attempt 1: spawn + poll, then the user abandons the browser flow
+    const first = await authorize({})
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
+    const firstRejection = expect(first.callback).rejects.toThrow(/superseded/)
+    await vi.advanceTimersByTimeAsync(2_000) // 1st tick: still unauthenticated
+    expect(firstChild.kill).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(1)
+
+    // attempt 2 while attempt 1 is pending
+    const second = await authorize({})
+    expect(mockExecFile).toHaveBeenCalledTimes(2)
+    // previous child killed exactly once, BEFORE the new child was spawned
+    // (never two `kiro-cli login` processes alive at the same time)
+    expect(firstChild.kill).toHaveBeenCalledTimes(1)
+    expect(firstChild.kill.mock.invocationCallOrder[0]).toBeLessThan(mockExecFile.mock.invocationCallOrder[1])
+    // previous callback rejects with the supersession reason (not timeout, not cancelled)
+    await firstRejection
+    // only attempt 2's poll timer remains; attempt 1's was cleared, not orphaned
+    expect(vi.getTimerCount()).toBe(1)
+    expect(secondChild.kill).not.toHaveBeenCalled()
+
+    // attempt 2 proceeds and resolves normally
+    const credential = expect(second.callback).resolves.toEqual(EXPECTED_CREDENTIAL)
+    await vi.advanceTimersByTimeAsync(2_000) // attempt 2, 1st tick: unauthenticated
+    expect(secondChild.kill).not.toHaveBeenCalled()
+    authenticated = true
+    await vi.advanceTimersByTimeAsync(2_000) // attempt 2, 2nd tick: authenticated
+    await credential
+    expect(secondChild.kill).toHaveBeenCalledTimes(1)
+    expect(firstChild.kill).toHaveBeenCalledTimes(1) // not killed again by attempt 2's release
+    expect(vi.getTimerCount()).toBe(0)
+
+    await cleanup()
+    expect(firstChild.kill).toHaveBeenCalledTimes(1)
+    expect(secondChild.kill).toHaveBeenCalledTimes(1)
+  })
+
+  // Companion lock for the tick's ownership guard: attempt 1's probe is IN
+  // FLIGHT when attempt 2 supersedes it. The late probe result must not let
+  // attempt 1's tick act on the shared fields — an `=== undefined` guard would
+  // pass here (cancelPoll now holds attempt 2's canceller) and the stale tick
+  // would kill attempt 2's child and disarm attempt 2's poll.
+  test("supersession mid-probe: the stale tick neither re-arms nor touches the successor", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const probe = deferredStatus()
+    mockVerifyAuthAsync
+      .mockResolvedValueOnce(UNAUTHENTICATED) // attempt 1 entry
+      .mockImplementationOnce(() => probe.promise) // attempt 1, 1st tick (held)
+      .mockResolvedValueOnce(UNAUTHENTICATED) // attempt 2 entry
+      .mockResolvedValueOnce(UNAUTHENTICATED) // attempt 2, 1st tick
+      .mockResolvedValue(AUTHENTICATED) // attempt 2, 2nd tick
+    const firstChild = makeFakeChild()
+    const secondChild = makeFakeChild()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockExecFile.mockReturnValueOnce(firstChild as any).mockReturnValueOnce(secondChild as any)
+
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
+
+    const first = await authorize({})
+    const firstRejection = expect(first.callback).rejects.toThrow(/superseded/)
+    await vi.advanceTimersByTimeAsync(2_000) // attempt 1 tick fires, probe IN FLIGHT
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+
+    const second = await authorize({})
+    await firstRejection
+    expect(firstChild.kill).toHaveBeenCalledTimes(1)
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(3)
+    expect(vi.getTimerCount()).toBe(1) // attempt 2's timer only
+    const credential = expect(second.callback).resolves.toEqual(EXPECTED_CREDENTIAL)
+
+    // the LATE result for attempt 1 arrives AUTHENTICATED — the input that
+    // would make a stale, unguarded tick release attempt 2's child
+    probe.resolve(AUTHENTICATED)
+    await flush()
+    expect(secondChild.kill).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(1) // attempt 2's timer untouched, no extra re-arm
+
+    await vi.advanceTimersByTimeAsync(2_000) // attempt 2, 1st tick: unauthenticated
+    expect(secondChild.kill).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2_000) // attempt 2, 2nd tick: authenticated
+    await credential
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(5)
+    expect(secondChild.kill).toHaveBeenCalledTimes(1)
+    expect(firstChild.kill).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    await cleanup()
+  })
+
+  // Phase 3 re-gate residual (check 3c): the supersede check used to be
+  // followed by `await import("node:child_process")` BEFORE the spawn and the
+  // cancelPoll claim. Two authorize() calls resuming in the same microtask
+  // window both observed `cancelPoll === undefined`, then both spawned — two
+  // `kiro-cli login` children alive, the first orphaned. The import is now
+  // hoisted above the check so check → spawn → claim is one synchronous
+  // segment. Negative witness: with the await back between check and spawn,
+  // firstChild is never killed (`toHaveBeenCalledTimes(1)` fails with 0).
+  //
+  // Harness note: the two calls are NOT started in the same tick. vitest's
+  // manual mocks do not survive two concurrent dynamic imports of one module
+  // (the second `import("kiro-acp-ai-provider")` would resolve to the REAL
+  // SDK and spawn kiro-cli), so each call is parked at its entry probe first
+  // and both probes are then released in one synchronous segment — that puts
+  // both continuations in the same microtask window at the supersede check,
+  // which is exactly the race.
+  test("two authorize() calls resuming in the same microtask window: exactly one child alive", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    let authenticated = false
+    const probeA = deferredStatus()
+    const probeB = deferredStatus()
+    mockVerifyAuthAsync
+      .mockImplementationOnce(() => probeA.promise) // attempt 1 entry (held)
+      .mockImplementationOnce(() => probeB.promise) // attempt 2 entry (held)
+      .mockImplementation(async () => ({ installed: true, authenticated })) // ticks
+    const firstChild = makeFakeChild()
+    const secondChild = makeFakeChild()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockExecFile.mockReturnValueOnce(firstChild as any).mockReturnValueOnce(secondChild as any)
+
+    const h = makeMockContext()
+    const { cleanup, authorize } = await setupWithAuthorize(h)
+
+    // park both attempts at their entry probes (imports done, nothing spawned)
+    const a = authorize({})
+    await flush()
+    const b = authorize({})
+    await flush()
+    expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(2)
+    expect(mockExecFile).not.toHaveBeenCalled()
+
+    // release both in ONE synchronous segment: both continuations now reach
+    // the supersede check in the same microtask window
+    probeA.resolve(UNAUTHENTICATED)
+    probeB.resolve(UNAUTHENTICATED)
+    const [first, second] = await Promise.all([a, b])
+    expect(mockExecFile).toHaveBeenCalledTimes(2)
+
+    // exactly ONE child alive: the first was killed exactly once, BEFORE the
+    // second was spawned; the second is untouched
+    expect(firstChild.kill).toHaveBeenCalledTimes(1)
+    expect(firstChild.kill.mock.invocationCallOrder[0]).toBeLessThan(mockExecFile.mock.invocationCallOrder[1])
+    expect(secondChild.kill).not.toHaveBeenCalled()
+    // the first callback was superseded (not timeout, not cancelled); only the
+    // second attempt's poll timer remains
+    await expect(first.callback).rejects.toThrow(/superseded/)
+    expect(vi.getTimerCount()).toBe(1)
+
+    // the second attempt proceeds and resolves on an authenticated probe
+    const credential = expect(second.callback).resolves.toEqual(EXPECTED_CREDENTIAL)
+    await vi.advanceTimersByTimeAsync(2_000) // 1st tick: unauthenticated
+    expect(secondChild.kill).not.toHaveBeenCalled()
+    authenticated = true
+    await vi.advanceTimersByTimeAsync(2_000) // 2nd tick: authenticated
+    await credential
+    expect(secondChild.kill).toHaveBeenCalledTimes(1)
+    expect(firstChild.kill).toHaveBeenCalledTimes(1) // not killed again
+    expect(vi.getTimerCount()).toBe(0)
+
+    await cleanup()
+    expect(firstChild.kill).toHaveBeenCalledTimes(1)
+    expect(secondChild.kill).toHaveBeenCalledTimes(1)
+  })
+})
