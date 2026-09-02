@@ -180,7 +180,7 @@ describe("dependency pins and installed plugin API", () => {
       [pkg.peerDependencies, "@opencode-ai/plugin", "0.0.0-dev-18686"],
       [pkg.dependencies, "@opentui/solid", "0.5.9"],
       [pkg.dependencies, "solid-js", "1.9.12"],
-      [pkg.dependencies, "kiro-acp-ai-provider", "3.0.0"],
+      [pkg.dependencies, "kiro-acp-ai-provider", "3.1.0"],
     ]
 
     for (const [block, name, version] of expected) {

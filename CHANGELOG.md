@@ -11,13 +11,126 @@ stability promise: it may break when OpenCode's v2 branch moves. OpenCode v1 use
 stay on `opencode-kiro@0.4.0` (the `main` branch / npm `latest` line). No OpenCode v2
 release date is known or claimed here. Current pins: [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md).
 
-## [0.5.0-beta.4] - Unreleased
+## [0.5.0-beta.4] - 2026-09-02
+
+Supersedes 0.5.0-beta.3 at the same tested OpenCode commit. This release fixes a
+host stall during "Kiro CLI Login", stops kiro-cli process accumulation when switching
+reasoning effort, and adds the first plugin options. No re-login is needed.
+
+### Compatibility
+
+| Item | Value |
+|---|---|
+| Tested OpenCode commit (`upstream/v2` head, 2026-08-29) | `8ba434b5973856b2f32b8cd3543e154b25c413e6` |
+| Package version | `0.5.0-beta.4` |
+
+| Package | Pinned version | Where |
+|---|---|---|
+| `@opencode-ai/plugin` | `0.0.0-dev-18686` | devDependencies + peerDependencies (exact; the dev channel is the live v2 channel, pinned by exact version string, never by dist-tag; unchanged from beta.3) |
+| `@opentui/solid` | `0.5.9` | dependencies (exact; sole published version satisfying the `>=0.5.9` peer floor; bundler-external, never bundled; unchanged) |
+| `solid-js` | `1.9.12` | dependencies (exact; `@opentui/solid@0.5.9` peers this exactly; bundler-external, never bundled; unchanged) |
+| `kiro-acp-ai-provider` | `3.1.0` | dependencies (exact; moved from `3.0.0`) |
+
+Pin your install spec too: the host background-auto-refreshes unpinned npm plugin
+packages, so a bare `"opencode-kiro"` `plugins` entry can silently move you off the
+tested build. Use the exact `opencode-kiro@0.5.0-beta.4` spec.
 
 ### Added
 
+- **Non-blocking login probe.** "Kiro CLI Login" now polls kiro-cli through the SDK's
+  new `verifyAuthAsync` (the reason for the `3.1.0` pin). The previous probe ran
+  kiro-cli synchronously on every 2-second poll tick, blocking the host's event loop
+  for the duration of each kiro-cli call while a browser login was pending. Polling
+  cadence (every 2 seconds, up to 120 seconds) is unchanged; the host stays
+  responsive throughout.
+- **Plugin options `agent`, `mcpTimeout`, `discover`.** Set them through the object
+  form of the `plugins` entry in `opencode.json`:
+
+  ```json
+  {
+    "plugins": [
+      {
+        "package": "opencode-kiro@0.5.0-beta.4",
+        "options": { "agent": "opencode", "mcpTimeout": 45, "discover": true }
+      }
+    ]
+  }
+  ```
+
+  `agent` (default `"opencode"`) is the kiro-cli agent name; `mcpTimeout` (default
+  `45`) is the MCP tool-call timeout in minutes; `discover: false` skips the
+  setup-time model discovery kick-off (discovery on login/credential events still
+  runs). Values of the wrong type fall back to the defaults and unknown keys are
+  ignored. **Options are honored for npm-installed plugins only**: bundled/built-in
+  plugin loads receive no options from the host, so the defaults always apply there.
+  There is deliberately no `cwd` option; the working directory is derived per
+  OpenCode location automatically.
+- **Client identification.** The provider now identifies itself to kiro-cli as
+  `opencode-kiro` (with the plugin version) during ACP initialization, so Kiro-side
+  logs and diagnostics can tell plugin traffic apart from other ACP clients.
+
 ### Changed
 
+- **One Kiro provider instance is shared across reasoning-effort variants.** The
+  selected effort is applied per request through the plugin's `language` hook (the
+  SDK's per-model override path) instead of baking it into the provider instance.
+  Switching effort mid-session therefore no longer starts additional kiro-cli
+  processes: verified live on the tested host, the number of kiro-cli processes did
+  not grow across a high to low effort switch, where beta.3 created a separate
+  provider instance (and kiro-cli process) for each effort variant used. The effort
+  value that reaches kiro-cli is unchanged.
+- **SDK pin `kiro-acp-ai-provider` `3.0.0` -> `3.1.0`.** Additive release: it adds
+  `verifyAuthAsync`; the synchronous API the plugin used before is unchanged.
+- **Starting a new "Kiro CLI Login" while one is pending now cancels the previous
+  attempt.** Beta.3 left the earlier `kiro-cli login` child process running behind
+  the new one. Now the previous attempt is stopped and its outcome is reported to the
+  host as superseded (`Kiro CLI login superseded by a new login attempt.`); the new
+  attempt proceeds normally. Only the newest attempt can store a credential.
+
 ### Fixed
+
+- **Abandoned login attempts no longer surface an unhandled promise rejection.** A
+  login that timed out, was cancelled, or was superseded before the host attached
+  its result handler could previously emit an unhandled-rejection warning in the
+  host process. The rejection is now always observed.
+- **Provider-instance reuse works in production.** The plugin caches its owned
+  provider per settings so the host's repeated provider constructions share one
+  instance, but the cache key used to include everything the host passed along,
+  including a host-injected `fetch` function that made the key unusable and forced a
+  fresh instance every time. The key now derives only from the plugin's own provider
+  settings, so the cache actually reuses instances.
+
+### Upgrading from beta.3
+
+Change the `plugins` entry `opencode-kiro@0.5.0-beta.3` to `opencode-kiro@0.5.0-beta.4`
+and restart opencode. No new config keys are required (the options above are
+optional), no `cli.json` or `tui.json` entry, no re-login (credentials are host-owned
+and carry over). The tested OpenCode commit did not move.
+
+### Known limitations
+
+New in this release:
+
+1. **Model-discovery probes carry the SDK's default client name.** Only the main
+   provider (the one that serves chat requests) identifies itself as `opencode-kiro`;
+   the short-lived `listModels()` probe run during discovery bypasses the plugin's SDK
+   hook and still announces the SDK's default client name to kiro-cli. Cosmetic in
+   kiro-cli logs; no behavior impact.
+
+Unchanged from beta.3:
+
+2. **Live text credits still use the transient overlay.** At the tested commit the
+   live `session.text.ended` reducer still drops the event's provider state, so
+   in-turn credit updates come from the plugin's transient overlay. Durable state is
+   authoritative on every reconcile; nothing is double-counted.
+3. **Local `file:` installs render a per-slot TUI error.** The colon in a
+   `name@file:<tarball>` install dirname defeats the host's OpenTUI loader shim; the
+   failure is contained to the plugin's slots. Registry installs are colon-free.
+4. **No dollar cost anywhere.** Kiro is subscription-metered; the catalog declares
+   per-token `cost` 0, so every non-TUI cost surface shows $0.00 for Kiro sessions.
+   Credits render in the TUI surfaces only. Expected, not a defect.
+5. **Prerelease pins are rigid.** All v2-sensitive pins are exact and the
+   compatibility target is the single tested commit above.
 
 ## [0.5.0-beta.3] - 2026-08-30
 
@@ -277,7 +390,7 @@ v1 plugin contract throughout: singular `plugin` arrays in `opencode.json` and
 `tui.json`, the `opencode plugin opencode-kiro` installer, and `part.metadata.kiro`
 credits. Full documentation: the README at the `v0.4.0` tag.
 
-[0.5.0-beta.4]: https://github.com/NachoFLizaur/opencode-kiro/compare/v0.4.0...opencode-v2
+[0.5.0-beta.4]: https://www.npmjs.com/package/opencode-kiro/v/0.5.0-beta.4
 [0.5.0-beta.3]: https://www.npmjs.com/package/opencode-kiro/v/0.5.0-beta.3
 [0.5.0-beta.2]: https://www.npmjs.com/package/opencode-kiro/v/0.5.0-beta.2
 [0.5.0-beta.1]: https://www.npmjs.com/package/opencode-kiro/v/0.5.0-beta.1
