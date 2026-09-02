@@ -78,9 +78,14 @@ export function createDiscoveryResources(): DiscoveryResources {
 // `KiroACPProviderSettings.effort` key, not the v1-era `reasoningEffort`.
 // This is the single effort-plumbing mechanism: the host overlays the selected
 // variant's settings onto `model.settings` (`withVariant`,
-// model-resolver.ts:126-133 at the pinned SHA), which becomes the aisdk hook's
-// `event.options` and is passed verbatim to `createKiroAcp` — the aisdk hook
-// performs NO key mapping. The `satisfies` pin below makes a key rename in the
+// model-resolver.ts:126-133 at the pinned SHA), which becomes the aisdk hooks'
+// `event.options`. Since the beta.4 atom the aisdk `sdk` hook STRIPS `effort`
+// from the factory settings (allowlist — one shared provider across efforts);
+// the per-request carrier is the `language` hook, which reads
+// `event.options.effort` and forwards it as a `KiroACPModelOverrides` override
+// (`languageModel(id, { effort })`, pinned in src/server/aisdk.ts). So the
+// variant settings key emitted here MUST stay `effort` — it is what the
+// language hook reads. The `satisfies` pin below makes a key rename in the
 // SDK a compile error here.
 function effortSettings(effort: string): { effort: string } {
   return { effort } satisfies Pick<KiroACPProviderSettings, "effort">

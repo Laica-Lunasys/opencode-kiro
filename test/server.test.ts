@@ -220,14 +220,24 @@ function makeMockContext() {
 
   let integrationTransformCb: ((draft: unknown) => void) | undefined
   let catalogTransformCb: ((draft: unknown) => void) | undefined
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let sdkHookCb: ((event: any) => Promise<void> | void) | undefined
-  let sdkHookName: string | undefined
-  let sdkHookOptions: unknown
+  // aisdk registrations stored BY HOOK NAME: setup registers both the "sdk"
+  // and the "language" hooks (beta.4 atom), each with its own dispose spy so
+  // per-registration exactly-once disposal is observable.
+  const aisdkHooks = new Map<
+    string,
+    {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      cb: (event: any) => Promise<void> | void
+      options: unknown
+      dispose: ReturnType<typeof vi.fn>
+    }
+  >()
 
   const disposeSpies = {
     integration: vi.fn(async () => {}),
     catalog: vi.fn(async () => {}),
+    // shared hook-disposal knob: every per-registration dispose spy delegates
+    // here so failure injection (mockRejectedValue) hits all hook disposers
     hook: vi.fn(async () => {}),
   }
   const reload = vi.fn(async () => {})
@@ -254,10 +264,9 @@ function makeMockContext() {
       // dev-17968 signature: hook(name, cb, options?) with ModelHookOptions {providerID?}
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       hook: vi.fn(async (name: string, cb: (event: any) => Promise<void> | void, options?: unknown) => {
-        sdkHookName = name
-        sdkHookCb = cb
-        sdkHookOptions = options
-        return { dispose: disposeSpies.hook }
+        const dispose = vi.fn(async () => disposeSpies.hook())
+        aisdkHooks.set(name, { cb, options, dispose })
+        return { dispose }
       }),
     },
     event: { subscribe: vi.fn(() => events.iterable) },
@@ -271,6 +280,8 @@ function makeMockContext() {
     active,
     events,
     disposeSpies,
+    /** aisdk hook registrations by name ("sdk" / "language") */
+    hooks: aisdkHooks,
     integrationTransform: (draft: unknown) => {
       if (integrationTransformCb === undefined) throw new Error("integration transform not registered")
       integrationTransformCb(draft)
@@ -281,11 +292,18 @@ function makeMockContext() {
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     sdkHook: (event: any) => {
-      if (sdkHookCb === undefined) throw new Error("sdk hook not registered")
-      return sdkHookCb(event)
+      const registration = aisdkHooks.get("sdk")
+      if (registration === undefined) throw new Error("sdk hook not registered")
+      return registration.cb(event)
     },
-    getSdkHookName: () => sdkHookName,
-    getSdkHookOptions: () => sdkHookOptions,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    languageHook: (event: any) => {
+      const registration = aisdkHooks.get("language")
+      if (registration === undefined) throw new Error("language hook not registered")
+      return registration.cb(event)
+    },
+    getSdkHookName: () => (aisdkHooks.has("sdk") ? "sdk" : undefined),
+    getSdkHookOptions: () => aisdkHooks.get("sdk")?.options,
   }
 }
 
@@ -951,7 +969,18 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     await h.sdkHook(event)
 
     expect(mockCreateKiroAcp).toHaveBeenCalledTimes(1)
-    expect(mockCreateKiroAcp).toHaveBeenCalledWith(event.options)
+    // beta.4 atom: the factory receives the allowlist-sanitized settings plus
+    // the process-constant clientInfo — never the raw event options
+    expect(mockCreateKiroAcp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: h.directory,
+        agent: "opencode",
+        clientInfo: { name: "opencode-kiro", version: expect.any(String) },
+      }),
+    )
+    expect(mockCreateKiroAcp).not.toHaveBeenCalledWith(
+      expect.objectContaining({ fetch: expect.anything() }),
+    )
     expect(event.sdk).toBe(sdkInstances[0])
     expect(event.sdk).not.toBe(unowned)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -974,20 +1003,43 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     await cleanup()
   })
 
-  test("owned instances are reused per options key and shut down exactly once on cleanup", async () => {
+  test("owned instances are reused per sanitized settings key and shut down exactly once on cleanup", async () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
 
-    const eventA1 = { model: {}, package: "kiro-acp-ai-provider", options: { cwd: "/a" }, sdk: undefined as unknown }
-    const eventA2 = { model: {}, package: "kiro-acp-ai-provider", options: { cwd: "/a" }, sdk: undefined as unknown }
-    const eventB = { model: {}, package: "kiro-acp-ai-provider", options: { cwd: "/b" }, sdk: undefined as unknown }
+    // REALISTIC production shape: the host's prepareOptions unconditionally
+    // injects an `options.fetch` function plus name/headers/body extras (host
+    // aisdk.ts:119-131). Under the beta.3 JSON-safety key these options were
+    // unkeyable → a DISTINCT owned instance per event; the beta.4 allowlist
+    // key drops them, so the same allowlisted subset now shares ONE instance
+    // (this deliberately FLIPS the old expectation).
+    const base = { cwd: "/a", agent: "opencode", trustAllTools: true }
+    const eventA1 = {
+      model: {},
+      package: "kiro-acp-ai-provider",
+      options: { ...base, fetch: () => {}, name: "kiro", headers: { "x-a": "1" }, body: { a: 1 } },
+      sdk: undefined as unknown,
+    }
+    const eventA2 = {
+      model: {},
+      package: "kiro-acp-ai-provider",
+      options: { ...base, fetch: () => {}, name: "kiro", headers: { "x-a": "2" }, body: { a: 2 } },
+      sdk: undefined as unknown,
+    }
+    const eventB = {
+      model: {},
+      package: "kiro-acp-ai-provider",
+      options: { ...base, cwd: "/b", fetch: () => {} },
+      sdk: undefined as unknown,
+    }
     await h.sdkHook(eventA1)
     await h.sdkHook(eventA2)
     await h.sdkHook(eventB)
 
-    // stable-options reuse: same options -> same owned instance
+    // sanitized-settings reuse: same allowlisted subset -> same owned
+    // instance despite differing fetch identities/unknown extras
     expect(eventA2.sdk).toBe(eventA1.sdk)
-    expect(eventB.sdk).not.toBe(eventA1.sdk)
+    expect(eventB.sdk).not.toBe(eventA1.sdk) // different cwd -> different instance
     expect(sdkInstances).toHaveLength(2)
 
     await cleanup()
@@ -1015,14 +1067,18 @@ describe("aisdk hook + lifecycle (task 07)", () => {
 
     expect(h.disposeSpies.integration).toHaveBeenCalledTimes(1)
     expect(h.disposeSpies.catalog).toHaveBeenCalledTimes(1)
-    expect(h.disposeSpies.hook).toHaveBeenCalledTimes(1)
+    // two aisdk registrations since the beta.4 atom (sdk + language), each
+    // disposed exactly once through the shared knob
+    expect(h.disposeSpies.hook).toHaveBeenCalledTimes(2)
+    expect(h.hooks.get("sdk")!.dispose).toHaveBeenCalledTimes(1)
+    expect(h.hooks.get("language")!.dispose).toHaveBeenCalledTimes(1)
     expect(h.events.returned).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
 
     // a later third call is equally safe and disposes nothing again
     await cleanup()
     expect(h.disposeSpies.integration).toHaveBeenCalledTimes(1)
-    expect(h.disposeSpies.hook).toHaveBeenCalledTimes(1)
+    expect(h.disposeSpies.hook).toHaveBeenCalledTimes(2)
   })
 
   test("a failing disposer does not block the others; failures aggregate", async () => {
@@ -1058,13 +1114,15 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     expect(h.disposeSpies.hook).not.toHaveBeenCalled()
   })
 
-  // B3 regression lock (HOST_E2E_REPORT.md): end-to-end witness for the one
-  // effort mechanism that actually works at the pinned host SHA — variant
-  // settings -> host `withVariant` overlay -> `aisdk` hook `event.options` ->
-  // `createKiroAcp({ effort })`. The host builds per-call `providerOptions`
-  // only for `@ai-sdk/*` families, so the SDK factory setting is the sole
-  // carrier and the key must be the SDK's `effort`, never `reasoningEffort`.
-  test("the SDK effort key flows from the effort variant into createKiroAcp options", async () => {
+  // B3 regression lock (HOST_E2E_REPORT.md), re-targeted for the beta.4 atom:
+  // variant settings -> host `withVariant` overlay -> aisdk hook
+  // `event.options` still carries the SDK's `effort` key (never
+  // `reasoningEffort`) — that catalog contract is unchanged. But the factory
+  // side FLIPS: the allowlist strips `effort` from the `createKiroAcp`
+  // settings (one shared provider across efforts); the per-request carrier is
+  // now the `language` hook's `languageModel(id, { effort })` override, whose
+  // positive witness lives in the beta.4 describe block below.
+  test("the effort variant reaches event.options but is stripped from createKiroAcp settings", async () => {
     const h = makeMockContext()
     h.active.mockResolvedValue({ integrationID: "kiro" })
     mockListModels.mockResolvedValue([
@@ -1087,9 +1145,16 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     const event = { model: { modelID: "with-efforts" }, package: "kiro-acp-ai-provider", options, sdk: undefined as unknown }
     await h.sdkHook(event)
 
-    expect(mockCreateKiroAcp).toHaveBeenCalledWith(
-      expect.objectContaining({ effort: "high", cwd: h.directory }),
+    expect(options.effort).toBe("high") // the host overlay contract is intact
+    expect(mockCreateKiroAcp).toHaveBeenCalledWith(expect.objectContaining({ cwd: h.directory }))
+    // allowlist strips effort/efforts from the factory settings...
+    expect(mockCreateKiroAcp).not.toHaveBeenCalledWith(
+      expect.objectContaining({ effort: expect.anything() }),
     )
+    expect(mockCreateKiroAcp).not.toHaveBeenCalledWith(
+      expect.objectContaining({ efforts: expect.anything() }),
+    )
+    // ...and the v1-era key never re-appears anywhere
     expect(mockCreateKiroAcp).not.toHaveBeenCalledWith(
       expect.objectContaining({ reasoningEffort: expect.anything() }),
     )
@@ -1100,3 +1165,268 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     await cleanup()
   })
 })
+
+// ---------------------------------------------------------------------------
+// beta.4 atom: aisdk language hook + allowlist sanitization + clientInfo
+// ---------------------------------------------------------------------------
+
+// New behavior locks for the beta.4 atom (Items 1+2+5). Rationale:
+// - The host's `prepareOptions` spreads model settings into `event.options`
+//   AND unconditionally injects an `options.fetch` function (host
+//   aisdk.ts:119-131 at the pinned SHA) — under the beta.3 JSON-safety key
+//   that made EVERY production event unkeyable (cache bypass, one owned ACP
+//   process per event). The allowlist-sanitized key restores reuse.
+// - The allowlist governs BOTH the cache key AND the `createKiroAcp`
+//   argument, so a dropped key can never silently configure a provider.
+// - `effort`/`efforts` are excluded from key/settings so ONE provider is
+//   shared across effort variants; the per-request carrier is the `language`
+//   hook's `languageModel(id, { effort })` override (SDK precedence:
+//   overrides?.effort ?? settings.efforts?.[modelId] ?? settings.effort).
+// - No plugin-side language-instance cache: the host memoizes language
+//   instances per settings-key (host aisdk.ts:249-291), naturally per-effort
+//   because variant settings differ.
+describe("aisdk language hook + allowlist (beta.4 atom)", () => {
+  /** the version the CLIENT_INFO constant must carry — read from the real
+   * package.json so the lock survives version bumps (no hardcoded literal) */
+  const pkgVersion = (
+    JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+    ) as { version: string }
+  ).version
+
+  /** production-realistic sdk-hook event (fetch-bearing) */
+  function sdkEvent(options: Record<string, unknown>) {
+    return { model: {}, package: "kiro-acp-ai-provider", options, sdk: undefined as unknown }
+  }
+
+  test("language hook is registered providerID-scoped and disposed on cleanup exactly once", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    const registration = h.hooks.get("language")
+    expect(registration).toBeDefined()
+    // dev-17968 ModelHookOptions scoping: fires only for the kiro provider
+    expect(registration!.options).toEqual({ providerID: "kiro" })
+    expect(registration!.dispose).not.toHaveBeenCalled()
+
+    await cleanup()
+    expect(registration!.dispose).toHaveBeenCalledTimes(1)
+
+    await cleanup() // idempotent: no second disposal
+    expect(registration!.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  test("override path: variant effort flows via languageModel(id, { effort })", async () => {
+    // end-to-end witness replacing the retired settings-path positive lock:
+    // catalog variant -> host `withVariant` overlay (model-resolver.ts:126-133)
+    // -> language-hook `event.options.effort` -> KiroACPModelOverrides
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockResolvedValue([
+      runtime("with-efforts", { runtimeEfforts: ["high"], baselineEffort: undefined }),
+    ])
+    const cleanup = await runSetup(h)
+    await flush()
+
+    const catalog = makeCatalogDraft()
+    seedRichKiro(catalog, [{ key: "with-efforts", modelID: "with-efforts" }])
+    h.catalogTransform(catalog.draft)
+    const record = catalog.providers.get("kiro")!
+    const variant = record.models.get("with-efforts")!.variants[0]
+    expect(variant).toEqual({ id: "high", settings: { effort: "high" } })
+
+    // host overlay + production fetch injection shape the options
+    const options = { ...record.provider.settings, ...variant.settings, fetch: () => {} }
+    const event = sdkEvent(options)
+    ;(event as { model: unknown }).model = { modelID: "with-efforts" }
+    await h.sdkHook(event)
+    const owned = sdkInstances[0]
+    expect(event.sdk).toBe(owned)
+
+    // the host calls the language hook AFTER the sdk hook with the resolved
+    // event.sdk (host aisdk.ts:286)
+    const languageEvent = {
+      model: { modelID: "with-efforts" },
+      sdk: event.sdk,
+      options,
+      language: undefined as unknown,
+    }
+    await h.languageHook(languageEvent)
+
+    expect(owned.languageModel).toHaveBeenCalledTimes(1)
+    expect(owned.languageModel).toHaveBeenCalledWith("with-efforts", { effort: "high" })
+    expect(languageEvent.language).toBe(owned.languageModel.mock.results[0]!.value)
+
+    await cleanup()
+  })
+
+  test("no effort -> undefined overrides", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    const sdk = { languageModel: vi.fn(() => ({ sentinel: true })) }
+    const languageEvent = {
+      model: { modelID: "claude-sonnet-4.6" },
+      sdk,
+      options: { cwd: "/a", agent: "opencode" },
+      language: undefined as unknown,
+    }
+    await h.languageHook(languageEvent)
+
+    // no invented effort and no 4-way fallback: absent effort passes
+    // undefined overrides so the SDK's own settings precedence applies
+    expect(sdk.languageModel).toHaveBeenCalledTimes(1)
+    expect(sdk.languageModel).toHaveBeenCalledWith("claude-sonnet-4.6", undefined)
+    expect(languageEvent.language).toBe(sdk.languageModel.mock.results[0]!.value)
+
+    await cleanup()
+  })
+
+  test("non-string effort is ignored", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    const sdk = { languageModel: vi.fn(() => ({ sentinel: true })) }
+    for (const effort of [42, {}]) {
+      await h.languageHook({
+        model: { modelID: "claude-sonnet-4.6" },
+        sdk,
+        options: { cwd: "/a", effort },
+        language: undefined as unknown,
+      })
+    }
+
+    // string guard: anything but a string effort yields undefined overrides
+    expect(sdk.languageModel).toHaveBeenCalledTimes(2)
+    expect(sdk.languageModel).toHaveBeenNthCalledWith(1, "claude-sonnet-4.6", undefined)
+    expect(sdk.languageModel).toHaveBeenNthCalledWith(2, "claude-sonnet-4.6", undefined)
+
+    await cleanup()
+  })
+
+  test("factory receives ONLY allowlisted keys + clientInfo", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    // production-realistic options: catalog settings + variant effort + the
+    // host-injected fetch/name/headers/body extras + a future unknown key
+    await h.sdkHook(
+      sdkEvent({
+        cwd: "/w",
+        agent: "opencode",
+        trustAllTools: true,
+        mcpTimeout: 45,
+        contextWindows: { "claude-sonnet-4.6": 200_000 },
+        effort: "high",
+        fetch: () => {},
+        name: "kiro",
+        headers: { "x-h": "1" },
+        body: { b: 1 },
+        futureUnknownKey: "x",
+      }),
+    )
+
+    // EXACT key-set assertion — the strongest form of the allowlist contract:
+    // key set = (passed keys ∩ allowlist) ∪ {clientInfo}; NO fetch, effort,
+    // efforts, name, headers, body or unknown keys may reach the factory
+    expect(mockCreateKiroAcp).toHaveBeenCalledTimes(1)
+    const arg = mockCreateKiroAcp.mock.calls[0]![0] as Record<string, unknown>
+    expect(Object.keys(arg).sort()).toEqual([
+      "agent",
+      "clientInfo",
+      "contextWindows",
+      "cwd",
+      "mcpTimeout",
+      "trustAllTools",
+    ])
+
+    await cleanup()
+  })
+
+  test("clientInfo is process-constant and matches package.json", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    // two distinct configs -> two factory calls, SAME constant clientInfo
+    await h.sdkHook(sdkEvent({ cwd: "/one", fetch: () => {} }))
+    await h.sdkHook(sdkEvent({ cwd: "/two", fetch: () => {} }))
+
+    expect(mockCreateKiroAcp).toHaveBeenCalledTimes(2)
+    const expected = { name: "opencode-kiro", version: pkgVersion }
+    const first = (mockCreateKiroAcp.mock.calls[0]![0] as Record<string, unknown>).clientInfo
+    const second = (mockCreateKiroAcp.mock.calls[1]![0] as Record<string, unknown>).clientInfo
+    expect(first).toEqual(expected) // no timestamps, no per-request fields
+    expect(second).toEqual(expected)
+
+    await cleanup()
+  })
+
+  test("provider is shared across efforts; per-request override diverges", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    // the atom's core invariant (Req 1): effort differences must NOT split
+    // the provider — one factory call — while each request still carries its
+    // own effort via the language-hook override
+    const base = { cwd: "/shared", agent: "opencode", trustAllTools: true }
+    const eventA = sdkEvent({ ...base, effort: "high", fetch: () => {} })
+    const eventB = sdkEvent({ ...base, effort: "low", fetch: () => {} })
+    await h.sdkHook(eventA)
+    await h.sdkHook(eventB)
+
+    expect(mockCreateKiroAcp).toHaveBeenCalledTimes(1)
+    expect(eventB.sdk).toBe(eventA.sdk)
+    const owned = sdkInstances[0]
+
+    await h.languageHook({ model: { modelID: "m" }, sdk: eventA.sdk, options: eventA.options, language: undefined })
+    await h.languageHook({ model: { modelID: "m" }, sdk: eventB.sdk, options: eventB.options, language: undefined })
+
+    expect(owned.languageModel).toHaveBeenNthCalledWith(1, "m", { effort: "high" })
+    expect(owned.languageModel).toHaveBeenNthCalledWith(2, "m", { effort: "low" })
+
+    await cleanup()
+  })
+
+  test("distinct allowlisted config -> distinct provider", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    // the key must still discriminate REAL config differences
+    const base = { cwd: "/same", agent: "opencode" }
+    await h.sdkHook(sdkEvent({ ...base, contextWindows: { m: 100_000 }, fetch: () => {} }))
+    await h.sdkHook(sdkEvent({ ...base, contextWindows: { m: 200_000 }, fetch: () => {} }))
+
+    expect(mockCreateKiroAcp).toHaveBeenCalledTimes(2)
+    expect(sdkInstances).toHaveLength(2)
+
+    await cleanup()
+    for (const instance of sdkInstances) expect(instance.shutdown).toHaveBeenCalledTimes(1)
+
+    await cleanup() // idempotent: nothing shuts down twice
+    for (const instance of sdkInstances) expect(instance.shutdown).toHaveBeenCalledTimes(1)
+  })
+
+  test("reasoningEffort never appears on the factory or the override path", async () => {
+    const h = makeMockContext()
+    const cleanup = await runSetup(h)
+
+    // effort-bearing flow: sdk hook + language hook (Req 3 guardrail — the
+    // effort key is the SDK's `effort`, the v1-era name must never resurface)
+    const event = sdkEvent({ cwd: "/g", effort: "high", fetch: () => {} })
+    await h.sdkHook(event)
+    const owned = sdkInstances[0]
+    await h.languageHook({ model: { modelID: "m" }, sdk: event.sdk, options: event.options, language: undefined })
+
+    expect(mockCreateKiroAcp).not.toHaveBeenCalledWith(
+      expect.objectContaining({ reasoningEffort: expect.anything() }),
+    )
+    for (const call of owned.languageModel.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain("reasoningEffort")
+    }
+    // positive witness that the flow actually ran
+    expect(owned.languageModel).toHaveBeenCalledWith("m", { effort: "high" })
+
+    await cleanup()
+  })
+})
+
