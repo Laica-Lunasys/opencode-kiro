@@ -1,15 +1,14 @@
-// credits sidebar box for the v2 `sidebar.content` slot, claimed with `append` so it composes
-// after the built-in sections (additive under the claims-based slot API — immutable
-// requirement 17). The formatted total + unit line under the "Kiro" header updates live as
-// durable/transient credits change; a compact companion chip (credits-chip-view.ts) carries
-// the same total in the prompt footer row. Presentation only: tui.ts assembles the merged
-// durable+transient rollup and passes it in as an accessor plus optional feature-detected
-// `context.theme` tokens; this module never touches the TUI context. With no tokens (absent
-// or misshapen theme), nothing sets foreground colors and the terminal/host defaults apply —
-// rendering never DEPENDS on the theme (immutable requirement 12).
+// credits sidebar box for the `sidebar.content` slot, claimed with `append` so it composes
+// after the built-in sections and never replaces host content. The formatted total + unit
+// line under the "Kiro" header updates live as durable/transient credits change; a compact
+// companion chip (credits-chip-view.ts) carries the same total in the prompt footer row.
+// Presentation only: tui.ts assembles the merged durable+transient rollup and passes it in as
+// an accessor plus optional feature-detected `context.theme` tokens; this module never touches
+// the TUI context. With no tokens (absent or misshapen theme), nothing sets foreground colors
+// and the terminal/host defaults apply — rendering never depends on the theme.
 // built with @opentui/solid's universal-renderer calls (what compiled Solid JSX lowers to)
 // so dist needs no solid transform; @opentui/solid and solid-js stay external (and, inside
-// the TUI host, resolve to the HOST's module instances via its runtime-plugin loader shim).
+// the TUI host, resolve to the host's module instances via its runtime-plugin loader shim).
 import type { ColorInput } from "@opentui/core"
 import { createElement, insert, insertNode, setProp, type DomNode } from "@opentui/solid"
 import { createMemo } from "solid-js"
@@ -17,8 +16,8 @@ import { formatCredits, type SessionCredits } from "./credits.js"
 
 /**
  * Feature-detected `context.theme` colors for the credits views (validated by tui.ts from
- * `theme.text.default` / `theme.text.subdued` — RGBA at the pinned SHA). Every field is
- * optional: an absent token means "leave the default/inherited styling alone".
+ * `theme.text.default` / `theme.text.subdued`). Every field is optional: an absent token
+ * means "leave the default/inherited styling alone".
  */
 export interface CreditThemeTokens {
   /** Header foreground (`theme.text.default`). */

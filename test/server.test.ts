@@ -9,16 +9,15 @@ import { createKiroAcp, listModels, verifyAuthAsync } from "kiro-acp-ai-provider
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import serverPlugin from "../src/server"
 
-// v2 behavior suite (task 08). Everything is driven through
+// Server plugin behavior suite. Everything is driven through
 // `serverPlugin.setup(mockContext)` plus module mocks — never through module
-// internals. Assertions come from the acceptance criteria of tasks 05/06/07
-// and the migration doc's Test matrix (Auth/Models/Variants/AISDK/Lifecycle).
+// internals.
 
 // Hermetic: the SDK is mocked so no kiro-cli is ever spawned and no network is
 // touched; child_process.execFile is mocked so the login flow gets a fake
 // killable child; login poll/timeout tests use fake timers. The mock exposes
-// ONLY the async probe (beta.4 Item 3): production must never reach for the
-// sync `verifyAuth` again, and a regression would fail here as a missing export.
+// only the async probe: production must never use the sync `verifyAuth`, and a
+// regression would fail here as a missing export.
 vi.mock("kiro-acp-ai-provider", () => ({
   verifyAuthAsync: vi.fn(),
   listModels: vi.fn(),
@@ -211,15 +210,14 @@ function runtime(modelId: string, over: Partial<ModelWithEfforts> = {}): ModelWi
 const tmpDirs: string[] = []
 
 /**
- * Mock v2 plugin context: records the registered integration/catalog transform
+ * Mock plugin context: records the registered integration/catalog transform
  * callbacks and the sdk hook callback, exposes controllable connection state,
  * a spied reload, a controllable event stream, and per-registration disposer
  * spies. `integration.list()` yields a hermetic temp directory location.
  *
- * `options` is ABSENT by default (the key is not even present) — that absence
- * is the witness for the `context.options ?? {}` guard in src/server.ts, so
- * every pre-existing test keeps exercising it. Item 6 tests opt in via
- * `makeMockContext({ options: {...} })`.
+ * `options` is absent by default (the key is not even present), so every
+ * default-path test exercises the `context.options ?? {}` guard in
+ * src/server.ts. Option tests opt in via `makeMockContext({ options: {...} })`.
  */
 function makeMockContext(init: { options?: Record<string, unknown> } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "kiro-v2-test-"))
@@ -227,8 +225,8 @@ function makeMockContext(init: { options?: Record<string, unknown> } = {}) {
 
   let integrationTransformCb: ((draft: unknown) => void) | undefined
   let catalogTransformCb: ((draft: unknown) => void) | undefined
-  // aisdk registrations stored BY HOOK NAME: setup registers both the "sdk"
-  // and the "language" hooks (beta.4 atom), each with its own dispose spy so
+  // aisdk registrations stored by hook name: setup registers both the "sdk"
+  // and the "language" hooks, each with its own dispose spy so
   // per-registration exactly-once disposal is observable.
   const aisdkHooks = new Map<
     string,
@@ -268,7 +266,7 @@ function makeMockContext(init: { options?: Record<string, unknown> } = {}) {
       reload,
     },
     aisdk: {
-      // dev-17968 signature: hook(name, cb, options?) with ModelHookOptions {providerID?}
+      // hook(name, cb, options?) with ModelHookOptions {providerID?}
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       hook: vi.fn(async (name: string, cb: (event: any) => Promise<void> | void, options?: unknown) => {
         const dispose = vi.fn(async () => disposeSpies.hook())
@@ -277,7 +275,7 @@ function makeMockContext(init: { options?: Record<string, unknown> } = {}) {
       }),
     },
     event: { subscribe: vi.fn(() => events.iterable) },
-    // present ONLY when a test opts in — see the docblock above
+    // present only when a test opts in — see the docblock above
     ...(init.options !== undefined ? { options: init.options } : {}),
   }
 
@@ -323,7 +321,7 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve))
 }
 
-/** run setup, asserting the v2 contract that it returns a Cleanup function */
+/** run setup, asserting the contract that it returns a Cleanup function */
 async function runSetup(h: Harness): Promise<() => Promise<void> | void> {
   const cleanup = await serverPlugin.setup(h.context)
   if (typeof cleanup !== "function") throw new Error("setup must return a cleanup function")
@@ -347,8 +345,8 @@ async function setupWithAuthorize(h: Harness) {
 
 const kiroEvent = () => ({ type: "integration.connection.updated", data: { integrationID: "kiro" } })
 
-// Phase 9 dual-listen credential events (upstream renamed
-// `integration.connection.updated` → `credential.updated` + `credential.switched`)
+// current-host credential events (`integration.connection.updated` was
+// replaced upstream by `credential.updated` + `credential.switched`)
 const credentialUpdatedEvent = () => ({ type: "credential.updated", data: {} })
 const credentialSwitchedEvent = (integrationID: string, credentialID: string | null) => ({
   type: "credential.switched",
@@ -383,13 +381,13 @@ afterEach(() => {
 })
 
 // ---------------------------------------------------------------------------
-// Task 05: Integration/Credential auth flow
+// Integration/Credential auth flow
 // ---------------------------------------------------------------------------
 
-describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
+describe("auth: Integration kiro + Kiro CLI Login OAuth", () => {
   test("server plugin definition carries tui: true", () => {
-    // dev-17968 `tui?: boolean` (dist/promise/plugin.d.ts:40): the host
-    // auto-loads this package's ./tui entrypoint for npm-channel installs
+    // `tui?: boolean` (dist/promise/plugin.d.ts): the host auto-loads this
+    // package's ./tui entrypoint for npm-channel installs
     expect(serverPlugin.tui).toBe(true)
   })
 
@@ -404,19 +402,19 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
     expect(integration.methods).toHaveLength(1)
     const registration = integration.methods[0]
     expect(registration.integrationID).toBe("kiro")
-    // exact dev-17968 IntegrationOAuthMethod shape: {id, type:"oauth", label};
-    // our flow needs no form fields, so the optional `form` is omitted
+    // exact IntegrationOAuthMethod shape: {id, type:"oauth", label}; the flow
+    // needs no form fields, so the optional `form` is omitted
     expect(Object.keys(registration.method).sort()).toEqual(["id", "label", "type"])
     expect(registration.method).toEqual({
       id: "kiro-cli-login",
       type: "oauth",
       label: "Kiro CLI Login",
     })
-    // the v1-era prompts/select-question API was DELETED upstream: no `prompts`
-    // key may survive on the registration or the method
+    // the older prompts/select-question API no longer exists upstream: no
+    // `prompts` key may appear on the registration or the method
     expect("prompts" in registration).toBe(false)
     expect("prompts" in registration.method).toBe(false)
-    // authorize takes the Form.Answer argument (new dev-17968 signature)
+    // authorize takes the Form.Answer argument
     expect(typeof registration.authorize).toBe("function")
     expect(registration.authorize.length).toBe(1)
     // kiro-cli owns credential storage/refresh: no refresh callback registered
@@ -461,14 +459,14 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
     const h = makeMockContext()
     const { cleanup, authorize } = await setupWithAuthorize(h)
 
-    // Form.Answer argument (dev-17968): our method registers no form fields, so
-    // any answer record — including a stray one — enters the same login flow
+    // Form.Answer argument: the method registers no form fields, so any answer
+    // record — including a stray one — enters the same login flow
     const authorization = await authorize({ unused: "answer" })
     expect(mockExecFile).toHaveBeenCalledTimes(1)
     expect(mockExecFile).toHaveBeenCalledWith("kiro-cli", ["login"], { shell: false })
     expect(authorization.mode).toBe("auto")
 
-    // task 05 acceptance: poll observes authenticated -> child stops,
+    // poll observes authenticated -> child stops,
     // Credential.OAuth {type:"oauth", refresh:"", expires:0} resolves
     const credential = expect(authorization.callback).resolves.toEqual(EXPECTED_CREDENTIAL)
 
@@ -495,9 +493,10 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
       const h = makeMockContext()
       const { cleanup, authorize } = await setupWithAuthorize(h)
 
-      // no hand guard on the callback: the production guard (auth.ts
-      // authorize) absorbs the cancellation raised by cleanup below — vitest
-      // fails on unhandled rejections, so this test is itself a witness
+      // no catch handler is attached to the callback here on purpose: the
+      // production guard in auth.ts absorbs the cancellation raised by cleanup
+      // below, and vitest fails on unhandled rejections, so this test also
+      // verifies that guard
       const authorization = await authorize({})
       expect(authorization.mode).toBe("auto")
 
@@ -568,10 +567,10 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth (task 05)", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Task 06: catalog transform + discovery lifecycle
+// catalog transform + discovery lifecycle
 // ---------------------------------------------------------------------------
 
-describe("discovery: catalog transform + runtime model lifecycle (task 06)", () => {
+describe("discovery: catalog transform + runtime model lifecycle", () => {
   test("successful discovery publishes exact case-sensitive intersection and reloads once", async () => {
     const h = makeMockContext()
     h.active.mockResolvedValue({ integrationID: "kiro" })
@@ -762,7 +761,7 @@ describe("discovery: catalog transform + runtime model lifecycle (task 06)", () 
     await cleanup()
   })
 
-  test("effort variants match v1 merge semantics; empty efforts invent nothing", async () => {
+  test("effort variants merge into settings and variants; empty efforts invent nothing", async () => {
     const h = makeMockContext()
     h.active.mockResolvedValue({ integrationID: "kiro" })
     mockListModels.mockResolvedValue([
@@ -780,7 +779,7 @@ describe("discovery: catalog transform + runtime model lifecycle (task 06)", () 
     h.catalogTransform(catalog.draft)
 
     const models = catalog.providers.get("kiro")!.models
-    // B3 fix lock: the emitted settings key is the SDK's `effort`
+    // the emitted settings key is the SDK's `effort`
     // (KiroACPProviderSettings, dist/index.d.ts) — never `reasoningEffort`
     expect(models.get("with-efforts")!.settings.effort).toBe("low")
     expect(models.get("with-efforts")!.settings.reasoningEffort).toBeUndefined()
@@ -840,10 +839,10 @@ describe("discovery: catalog transform + runtime model lifecycle (task 06)", () 
 })
 
 // ---------------------------------------------------------------------------
-// Task 31: dual-listen credential-event migration (Phase 9)
+// credential events on legacy and current hosts
 // ---------------------------------------------------------------------------
 
-describe("discovery: dual-listen credential events (task 31)", () => {
+describe("discovery: credential events on legacy and current hosts", () => {
   /** setup while disconnected: no initial discovery, a clean call baseline */
   async function setupDisconnected() {
     const h = makeMockContext()
@@ -861,7 +860,7 @@ describe("discovery: dual-listen credential events (task 31)", () => {
     h.events.push(kiroEvent())
     await flush()
 
-    // old-host path stays alive: dual-listen must not drop the legacy name
+    // legacy-host path stays alive: the legacy event name must still be handled
     expect(h.active.mock.calls.length).toBeGreaterThan(activeCallsAtSetup)
     expect(mockListModels).toHaveBeenCalledTimes(1)
     expect(h.reload).toHaveBeenCalledTimes(1)
@@ -874,7 +873,7 @@ describe("discovery: dual-listen credential events (task 31)", () => {
     h.active.mockResolvedValue({ integrationID: "kiro" })
     mockListModels.mockResolvedValue([runtime("model-a")])
 
-    // the new-host event carries NO payload — there is nothing to scope on;
+    // the new-host event carries no payload — there is nothing to scope on;
     // the connection.active re-check is the scoping
     h.events.push(credentialUpdatedEvent())
     await flush()
@@ -943,7 +942,7 @@ describe("discovery: dual-listen credential events (task 31)", () => {
     await flush()
     expect(h.reload).toHaveBeenCalledTimes(1)
 
-    // logout observed only through the NEW event name: the event payload is
+    // logout observed only through the new event name: the event payload is
     // empty, so connection.active alone must drive the clear
     h.active.mockResolvedValue(undefined)
     h.events.push(credentialUpdatedEvent())
@@ -960,18 +959,18 @@ describe("discovery: dual-listen credential events (task 31)", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Task 07: AISDK hook ownership + aggregated idempotent cleanup
+// AISDK hook ownership + aggregated idempotent cleanup
 // ---------------------------------------------------------------------------
 
-describe("aisdk hook + lifecycle (task 07)", () => {
+describe("aisdk sdk hook + lifecycle", () => {
   test("hook is registered providerID-scoped and overwrites a pre-populated event.sdk with the owned instance", async () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
     expect(h.getSdkHookName()).toBe("sdk")
-    // dev-17968 ModelHookOptions scoping: the hook only fires for the kiro provider
+    // ModelHookOptions scoping: the hook only fires for the kiro provider
     expect(h.getSdkHookOptions()).toEqual({ providerID: "kiro" })
 
-    const unowned = { languageModel: vi.fn() } // DynamicProviderPlugin residue
+    const unowned = { languageModel: vi.fn() } // provider pre-populated by the host
     const event = {
       model: { modelID: "claude-sonnet-4.6" },
       package: "kiro-acp-ai-provider",
@@ -981,8 +980,8 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     await h.sdkHook(event)
 
     expect(mockCreateKiroAcp).toHaveBeenCalledTimes(1)
-    // beta.4 atom: the factory receives the allowlist-sanitized settings plus
-    // the process-constant clientInfo — never the raw event options
+    // the factory receives the allowlist-sanitized settings plus the
+    // process-constant clientInfo — never the raw event options
     expect(mockCreateKiroAcp).toHaveBeenCalledWith(
       expect.objectContaining({
         cwd: h.directory,
@@ -1019,12 +1018,10 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
 
-    // REALISTIC production shape: the host's prepareOptions unconditionally
-    // injects an `options.fetch` function plus name/headers/body extras (host
-    // aisdk.ts:119-131). Under the beta.3 JSON-safety key these options were
-    // unkeyable → a DISTINCT owned instance per event; the beta.4 allowlist
-    // key drops them, so the same allowlisted subset now shares ONE instance
-    // (this deliberately FLIPS the old expectation).
+    // realistic production shape: the host's prepareOptions unconditionally
+    // injects an `options.fetch` function plus name/headers/body extras. The
+    // allowlist key drops them, so events sharing the same allowlisted subset
+    // share one owned instance.
     const base = { cwd: "/a", agent: "opencode", trustAllTools: true }
     const eventA1 = {
       model: {},
@@ -1069,8 +1066,9 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     const { cleanup, authorize } = await setupWithAuthorize(h)
 
     // put a login poll in flight so cleanup has timers + a child to release;
-    // no hand guard — the production callback guard absorbs the disposal
-    // rejection (vitest would fail the run on an unhandled rejection)
+    // no catch handler is attached here — the production callback guard
+    // absorbs the disposal rejection (vitest would fail the run on an
+    // unhandled rejection)
     const authorization = await authorize({})
     expect(authorization.mode).toBe("auto")
     expect(vi.getTimerCount()).toBeGreaterThan(0)
@@ -1081,8 +1079,8 @@ describe("aisdk hook + lifecycle (task 07)", () => {
 
     expect(h.disposeSpies.integration).toHaveBeenCalledTimes(1)
     expect(h.disposeSpies.catalog).toHaveBeenCalledTimes(1)
-    // two aisdk registrations since the beta.4 atom (sdk + language), each
-    // disposed exactly once through the shared knob
+    // two aisdk registrations (sdk + language), each disposed exactly once
+    // through the shared knob
     expect(h.disposeSpies.hook).toHaveBeenCalledTimes(2)
     expect(h.hooks.get("sdk")!.dispose).toHaveBeenCalledTimes(1)
     expect(h.hooks.get("language")!.dispose).toHaveBeenCalledTimes(1)
@@ -1128,14 +1126,12 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     expect(h.disposeSpies.hook).not.toHaveBeenCalled()
   })
 
-  // B3 regression lock (HOST_E2E_REPORT.md), re-targeted for the beta.4 atom:
-  // variant settings -> host `withVariant` overlay -> aisdk hook
-  // `event.options` still carries the SDK's `effort` key (never
-  // `reasoningEffort`) — that catalog contract is unchanged. But the factory
-  // side FLIPS: the allowlist strips `effort` from the `createKiroAcp`
-  // settings (one shared provider across efforts); the per-request carrier is
-  // now the `language` hook's `languageModel(id, { effort })` override, whose
-  // positive witness lives in the beta.4 describe block below.
+  // effort-key regression test: variant settings -> host `withVariant` overlay
+  // -> aisdk hook `event.options` carries the SDK's `effort` key (never
+  // `reasoningEffort`). On the factory side the allowlist strips `effort` from
+  // the `createKiroAcp` settings (one shared provider across efforts); the
+  // per-request carrier is the `language` hook's `languageModel(id, { effort })`
+  // override, covered in the language-hook describe block below.
   test("the effort variant reaches event.options but is stripped from createKiroAcp settings", async () => {
     const h = makeMockContext()
     h.active.mockResolvedValue({ integrationID: "kiro" })
@@ -1168,7 +1164,7 @@ describe("aisdk hook + lifecycle (task 07)", () => {
     expect(mockCreateKiroAcp).not.toHaveBeenCalledWith(
       expect.objectContaining({ efforts: expect.anything() }),
     )
-    // ...and the v1-era key never re-appears anywhere
+    // ...and the legacy key never appears anywhere
     expect(mockCreateKiroAcp).not.toHaveBeenCalledWith(
       expect.objectContaining({ reasoningEffort: expect.anything() }),
     )
@@ -1181,27 +1177,12 @@ describe("aisdk hook + lifecycle (task 07)", () => {
 })
 
 // ---------------------------------------------------------------------------
-// beta.4 atom: aisdk language hook + allowlist sanitization + clientInfo
+// aisdk language hook + allowlist sanitization + clientInfo
 // ---------------------------------------------------------------------------
 
-// New behavior locks for the beta.4 atom (Items 1+2+5). Rationale:
-// - The host's `prepareOptions` spreads model settings into `event.options`
-//   AND unconditionally injects an `options.fetch` function (host
-//   aisdk.ts:119-131 at the pinned SHA) — under the beta.3 JSON-safety key
-//   that made EVERY production event unkeyable (cache bypass, one owned ACP
-//   process per event). The allowlist-sanitized key restores reuse.
-// - The allowlist governs BOTH the cache key AND the `createKiroAcp`
-//   argument, so a dropped key can never silently configure a provider.
-// - `effort`/`efforts` are excluded from key/settings so ONE provider is
-//   shared across effort variants; the per-request carrier is the `language`
-//   hook's `languageModel(id, { effort })` override (SDK precedence:
-//   overrides?.effort ?? settings.efforts?.[modelId] ?? settings.effort).
-// - No plugin-side language-instance cache: the host memoizes language
-//   instances per settings-key (host aisdk.ts:249-291), naturally per-effort
-//   because variant settings differ.
-describe("aisdk language hook + allowlist (beta.4 atom)", () => {
+describe("aisdk language hook, settings allowlist and clientInfo", () => {
   /** the version the CLIENT_INFO constant must carry — read from the real
-   * package.json so the lock survives version bumps (no hardcoded literal) */
+   * package.json so the assertion survives version bumps (no hardcoded literal) */
   const pkgVersion = (
     JSON.parse(
       readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
@@ -1219,7 +1200,7 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
 
     const registration = h.hooks.get("language")
     expect(registration).toBeDefined()
-    // dev-17968 ModelHookOptions scoping: fires only for the kiro provider
+    // ModelHookOptions scoping: fires only for the kiro provider
     expect(registration!.options).toEqual({ providerID: "kiro" })
     expect(registration!.dispose).not.toHaveBeenCalled()
 
@@ -1231,9 +1212,8 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
   })
 
   test("override path: variant effort flows via languageModel(id, { effort })", async () => {
-    // end-to-end witness replacing the retired settings-path positive lock:
-    // catalog variant -> host `withVariant` overlay (model-resolver.ts:126-133)
-    // -> language-hook `event.options.effort` -> KiroACPModelOverrides
+    // end-to-end: catalog variant -> host `withVariant` overlay -> language-hook
+    // `event.options.effort` -> KiroACPModelOverrides
     const h = makeMockContext()
     h.active.mockResolvedValue({ integrationID: "kiro" })
     mockListModels.mockResolvedValue([
@@ -1257,8 +1237,8 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
     const owned = sdkInstances[0]
     expect(event.sdk).toBe(owned)
 
-    // the host calls the language hook AFTER the sdk hook with the resolved
-    // event.sdk (host aisdk.ts:286)
+    // the host calls the language hook after the sdk hook with the resolved
+    // event.sdk
     const languageEvent = {
       model: { modelID: "with-efforts" },
       sdk: event.sdk,
@@ -1287,7 +1267,7 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
     }
     await h.languageHook(languageEvent)
 
-    // no invented effort and no 4-way fallback: absent effort passes
+    // no invented effort and no extra fallback: absent effort passes
     // undefined overrides so the SDK's own settings precedence applies
     expect(sdk.languageModel).toHaveBeenCalledTimes(1)
     expect(sdk.languageModel).toHaveBeenCalledWith("claude-sonnet-4.6", undefined)
@@ -1318,7 +1298,7 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
     await cleanup()
   })
 
-  test("factory receives ONLY allowlisted keys + clientInfo", async () => {
+  test("factory receives only allowlisted keys + clientInfo", async () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
 
@@ -1340,8 +1320,8 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
       }),
     )
 
-    // EXACT key-set assertion — the strongest form of the allowlist contract:
-    // key set = (passed keys ∩ allowlist) ∪ {clientInfo}; NO fetch, effort,
+    // exact key-set assertion — the strongest form of the allowlist contract:
+    // key set = (passed keys ∩ allowlist) ∪ {clientInfo}; no fetch, effort,
     // efforts, name, headers, body or unknown keys may reach the factory
     expect(mockCreateKiroAcp).toHaveBeenCalledTimes(1)
     const arg = mockCreateKiroAcp.mock.calls[0]![0] as Record<string, unknown>
@@ -1361,7 +1341,7 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
 
-    // two distinct configs -> two factory calls, SAME constant clientInfo
+    // two distinct configs -> two factory calls, same constant clientInfo
     await h.sdkHook(sdkEvent({ cwd: "/one", fetch: () => {} }))
     await h.sdkHook(sdkEvent({ cwd: "/two", fetch: () => {} }))
 
@@ -1379,9 +1359,9 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
 
-    // the atom's core invariant (Req 1): effort differences must NOT split
-    // the provider — one factory call — while each request still carries its
-    // own effort via the language-hook override
+    // core invariant: effort differences must not split the provider — one
+    // factory call — while each request still carries its own effort via the
+    // language-hook override
     const base = { cwd: "/shared", agent: "opencode", trustAllTools: true }
     const eventA = sdkEvent({ ...base, effort: "high", fetch: () => {} })
     const eventB = sdkEvent({ ...base, effort: "low", fetch: () => {} })
@@ -1405,7 +1385,7 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
 
-    // the key must still discriminate REAL config differences
+    // the key must still discriminate real config differences
     const base = { cwd: "/same", agent: "opencode" }
     await h.sdkHook(sdkEvent({ ...base, contextWindows: { m: 100_000 }, fetch: () => {} }))
     await h.sdkHook(sdkEvent({ ...base, contextWindows: { m: 200_000 }, fetch: () => {} }))
@@ -1424,8 +1404,8 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
     const h = makeMockContext()
     const cleanup = await runSetup(h)
 
-    // effort-bearing flow: sdk hook + language hook (Req 3 guardrail — the
-    // effort key is the SDK's `effort`, the v1-era name must never resurface)
+    // effort-bearing flow: sdk hook + language hook (the effort key is the
+    // SDK's `effort`; the legacy name must never resurface)
     const event = sdkEvent({ cwd: "/g", effort: "high", fetch: () => {} })
     await h.sdkHook(event)
     const owned = sdkInstances[0]
@@ -1437,7 +1417,7 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
     for (const call of owned.languageModel.mock.calls) {
       expect(JSON.stringify(call)).not.toContain("reasoningEffort")
     }
-    // positive witness that the flow actually ran
+    // confirms the flow actually ran
     expect(owned.languageModel).toHaveBeenCalledWith("m", { effort: "high" })
 
     await cleanup()
@@ -1445,21 +1425,10 @@ describe("aisdk language hook + allowlist (beta.4 atom)", () => {
 })
 
 // ---------------------------------------------------------------------------
-// beta.4 Item 6: plugin options `agent` / `mcpTimeout` / `discover`
+// plugin options `agent` / `mcpTimeout` / `discover`
 // ---------------------------------------------------------------------------
 
-// New behavior locks for Item 6 (Req 9). Rationale:
-// - `Plugin.Context.options` is typed present (dist/promise/plugin.d.ts:26) but
-//   BOTH v2 mock contexts omit it and older hosts may too, so src/server.ts
-//   reads `context.options ?? {}`. `makeMockContext()` without an `options`
-//   key IS the guard witness — the default-path test below must never opt in.
-// - Exactly three options, type-checked at runtime with silent fallback to the
-//   defaults (`agent: "opencode"`, `mcpTimeout: 45`, `discover: true`);
-//   `trustAllTools` stays hardcoded and there is deliberately NO `cwd` option
-//   (per-location `integration.list().location.directory` wins).
-// - `discover: false` gates ONLY the setup-time kick-off; the credential-event
-//   path must stay live so a later login still discovers models.
-describe("plugin options (item 6)", () => {
+describe("plugin options", () => {
   /** connected setup + one runtime model + a rich catalog draft → provider record */
   async function setupAndTransform(h: Harness) {
     h.active.mockResolvedValue({ integrationID: "kiro" })
@@ -1475,7 +1444,7 @@ describe("plugin options (item 6)", () => {
   }
 
   test("options absent → defaults applied", async () => {
-    const h = makeMockContext() // NO options key at all — the ?? {} guard witness
+    const h = makeMockContext() // no options key at all: exercises the ?? {} guard
     expect("options" in h.raw).toBe(false)
 
     const { cleanup, record } = await setupAndTransform(h)
@@ -1533,7 +1502,7 @@ describe("plugin options (item 6)", () => {
     const cleanup = await runSetup(h)
     await flush()
 
-    // connected, yet NO setup-time discovery
+    // connected, yet no setup-time discovery
     expect(mockListModels).not.toHaveBeenCalled()
     expect(h.reload).not.toHaveBeenCalled()
 
@@ -1548,7 +1517,7 @@ describe("plugin options (item 6)", () => {
   })
 
   test("no cwd option surface", async () => {
-    // a user-supplied cwd is an UNKNOWN key: ignored silently, never plumbed
+    // a user-supplied cwd is an unknown key: ignored silently, never plumbed
     const h = makeMockContext({ options: { cwd: "/elsewhere" } })
     const { cleanup, record } = await setupAndTransform(h)
 
@@ -1568,31 +1537,16 @@ describe("plugin options (item 6)", () => {
 })
 
 // ---------------------------------------------------------------------------
-// beta.4 Items 3+4: async auth probe + login-callback guard
+// async auth probe + login-callback guard
 // ---------------------------------------------------------------------------
 
-// New behavior locks for Items 3 (adoption) + 4 (Reqs 4/6/7). Rationale:
-// - Blocking bug: the sync SDK `verifyAuth()` runs 2x execFileSync (kiro-cli
-//   `--version` + `whoami`, 10s timeouts each); polled every 2s it froze the
-//   host event loop roughly every 3rd tick. src/server/auth.ts now uses
-//   `verifyAuthAsync()` exclusively (SDK contract: identical AuthStatus,
-//   shared 5s memo, never rejects) at BOTH call sites — authorize entry and
-//   the poll tick.
-// - Req 6 guard: `authorize` binds `const callback = pollForLogin(...)`,
-//   guards the DERIVED promise (`callback.catch(() => {})`) and returns the
-//   ORIGINAL — an abandoned login can no longer surface as an unhandled
-//   rejection, while the host still observes timeout/cancel on the callback.
-// - Async-tick hazard: disposal can cancel the attempt while a probe is in
-//   flight; the tick must then neither re-arm the timer (leak after cleanup)
-//   nor settle the promise a second time.
-// - Req 7: the credential marker stays `expires: 0` (EXPECTED_CREDENTIAL).
-describe("async auth probe + callback guard (items 3+4)", () => {
+describe("auth: async probe and login-callback guard", () => {
   const UNAUTHENTICATED: AuthStatus = { installed: true, authenticated: false }
   const AUTHENTICATED: AuthStatus = { installed: true, authenticated: true }
   const TIMEOUT_GUIDANCE =
     /^Kiro authentication timed out\. Run `kiro-cli login` manually, then re-run `opencode auth login`\.$/
 
-  /** manually-controlled probe promise (mid-probe disposal lock) */
+  /** manually-controlled probe promise (for the mid-probe disposal tests) */
   function deferredStatus() {
     let resolve!: (status: AuthStatus) => void
     const promise = new Promise<AuthStatus>((r) => (resolve = r))
@@ -1622,13 +1576,13 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     expect(child.kill).not.toHaveBeenCalled()
 
     await vi.advanceTimersByTimeAsync(2_000) // 2nd poll: authenticated
-    await credential // Req 7: `expires: 0` marker, no synthetic expiry
+    await credential // `expires: 0` marker, no synthetic expiry
     expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(3)
     expect(child.kill).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
 
-    // non-blocking witness: every probe call — entry and ticks — was the
-    // async variant (returned a Promise the flow awaited), never a sync spawn
+    // every probe call — entry and ticks — was the async variant (returned a
+    // Promise the flow awaited), never a sync spawn
     for (const result of mockVerifyAuthAsync.mock.results) {
       expect(result.value).toBeInstanceOf(Promise)
     }
@@ -1640,8 +1594,8 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
     mockVerifyAuthAsync.mockResolvedValue(UNAUTHENTICATED) // never logs in
 
-    // belt-and-braces on top of vitest's own failure-on-unhandled-rejection:
-    // a scoped listener captures anything that leaks during this test
+    // in addition to vitest's own failure-on-unhandled-rejection, a scoped
+    // listener captures anything that leaks during this test
     const captured: unknown[] = []
     const onUnhandled = (reason: unknown) => {
       captured.push(reason)
@@ -1651,7 +1605,7 @@ describe("async auth probe + callback guard (items 3+4)", () => {
       const h = makeMockContext()
       const { cleanup, authorize } = await setupWithAuthorize(h)
 
-      // NO `.catch` attached by this test before the timeout fires
+      // no `.catch` attached by this test before the timeout fires
       const authorization = await authorize({})
 
       await vi.advanceTimersByTimeAsync(121_000) // > 120s poll budget → rejects
@@ -1659,8 +1613,8 @@ describe("async auth probe + callback guard (items 3+4)", () => {
       expect(captured).toEqual([])
       expect(vi.getTimerCount()).toBe(0)
 
-      // second half of Req 6: the ORIGINAL promise was returned, so a late
-      // consumer still observes the rejection (a swallowed promise would resolve)
+      // the original promise was returned, so a late consumer still observes
+      // the rejection (a swallowed promise would resolve)
       await expect(authorization.callback).rejects.toThrow(/`kiro-cli login`/)
 
       await cleanup()
@@ -1680,7 +1634,7 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     const { cleanup, authorize } = await setupWithAuthorize(h)
 
     const authorization = await authorize({})
-    // a consumer attached up-front: `callback.catch(() => {})` as the RETURNED
+    // a consumer attached up-front: `callback.catch(() => {})` as the returned
     // value would resolve to undefined here instead of rejecting
     const rejection = expect(authorization.callback).rejects.toThrow(TIMEOUT_GUIDANCE)
 
@@ -1697,7 +1651,7 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
     const probe = deferredStatus()
     // authorize entry resolves immediately (unauthenticated → spawn + poll);
-    // the first TICK gets the manually-controlled pending probe
+    // the first tick gets the manually-controlled pending probe
     mockVerifyAuthAsync.mockResolvedValueOnce(UNAUTHENTICATED).mockImplementation(() => probe.promise)
     const child = makeFakeChild()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1709,7 +1663,7 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     const authorization = await authorize({})
     const rejection = expect(authorization.callback).rejects.toThrow(/cancelled/)
 
-    await vi.advanceTimersByTimeAsync(2_000) // tick fires and is now IN FLIGHT
+    await vi.advanceTimersByTimeAsync(2_000) // tick fires and is now in flight
     expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(2)
     expect(vi.getTimerCount()).toBe(0) // timer cleared at tick start, not yet re-armed
 
@@ -1717,8 +1671,8 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     await rejection
     expect(child.kill).toHaveBeenCalledTimes(1)
 
-    // the LATE probe result arrives UNAUTHENTICATED with budget left — exactly
-    // the input that would make an unguarded tick re-arm the 2s timer AFTER
+    // the late probe result arrives unauthenticated with budget left — exactly
+    // the input that would make an unguarded tick re-arm the 2s timer after
     // cleanup (leaked timer) and later time out into a second settle. The
     // guarded tick must bail: cancelPoll was disarmed by the disposal.
     probe.resolve(UNAUTHENTICATED)
@@ -1744,8 +1698,8 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(1) // authorize entry probe
     const rejection = expect(authorization.callback).rejects.toThrow(TIMEOUT_GUIDANCE)
 
-    // cadence constants (auth.ts POLL_INTERVAL_MS / MAX_WAIT_MS) unchanged by
-    // the async tick: one probe per 2s tick, SDK 5s memo absorbs ~2 of every 3
+    // cadence constants (auth.ts POLL_INTERVAL_MS / MAX_WAIT_MS): one probe per
+    // 2s tick, so the SDK's 5s memo absorbs roughly two of every three
     await vi.advanceTimersByTimeAsync(1_999)
     expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(1) // nothing before 2s
     await vi.advanceTimersByTimeAsync(1)
@@ -1766,12 +1720,11 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     await cleanup()
   })
 
-  // Task 09 live-smoke defect (fix iteration 1): connect → abandon → reconnect
-  // left a `kiro-cli login` child alive with no owner. `state.auth` is ONE
-  // shared AuthResources; the second authorize() overwrote `child`/`cancelPoll`
-  // without releasing the first attempt, orphaning its process from the
-  // plugin's bookkeeping. Negative witness: without the supersede step the
-  // first child is never killed (its poll now owns the SECOND child), so
+  // connect → abandon → reconnect must not leave a `kiro-cli login` child alive
+  // with no owner. `state.auth` is one shared AuthResources, so a second
+  // authorize() that overwrote `child`/`cancelPoll` without releasing the first
+  // attempt would orphan its process. Without the supersede step the first
+  // child is never killed (its poll now owns the second child), so
   // `firstChild.kill` toHaveBeenCalledTimes(1) is the discriminating assertion.
   test("second authorize() while pending supersedes the first: one child alive at a time", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
@@ -1796,7 +1749,7 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     // attempt 2 while attempt 1 is pending
     const second = await authorize({})
     expect(mockExecFile).toHaveBeenCalledTimes(2)
-    // previous child killed exactly once, BEFORE the new child was spawned
+    // previous child killed exactly once, before the new child was spawned
     // (never two `kiro-cli login` processes alive at the same time)
     expect(firstChild.kill).toHaveBeenCalledTimes(1)
     expect(firstChild.kill.mock.invocationCallOrder[0]).toBeLessThan(mockExecFile.mock.invocationCallOrder[1])
@@ -1822,11 +1775,11 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     expect(secondChild.kill).toHaveBeenCalledTimes(1)
   })
 
-  // Companion lock for the tick's ownership guard: attempt 1's probe is IN
-  // FLIGHT when attempt 2 supersedes it. The late probe result must not let
-  // attempt 1's tick act on the shared fields — an `=== undefined` guard would
-  // pass here (cancelPoll now holds attempt 2's canceller) and the stale tick
-  // would kill attempt 2's child and disarm attempt 2's poll.
+  // Companion to the tick's ownership guard: attempt 1's probe is in flight
+  // when attempt 2 supersedes it. The late probe result must not let attempt
+  // 1's tick act on the shared fields — an `=== undefined` guard would pass
+  // here (cancelPoll now holds attempt 2's canceller) and the stale tick would
+  // kill attempt 2's child and disarm attempt 2's poll.
   test("supersession mid-probe: the stale tick neither re-arms nor touches the successor", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
     const probe = deferredStatus()
@@ -1846,7 +1799,7 @@ describe("async auth probe + callback guard (items 3+4)", () => {
 
     const first = await authorize({})
     const firstRejection = expect(first.callback).rejects.toThrow(/superseded/)
-    await vi.advanceTimersByTimeAsync(2_000) // attempt 1 tick fires, probe IN FLIGHT
+    await vi.advanceTimersByTimeAsync(2_000) // attempt 1 tick fires, probe in flight
     expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(2)
     expect(vi.getTimerCount()).toBe(0)
 
@@ -1857,7 +1810,7 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     expect(vi.getTimerCount()).toBe(1) // attempt 2's timer only
     const credential = expect(second.callback).resolves.toEqual(EXPECTED_CREDENTIAL)
 
-    // the LATE result for attempt 1 arrives AUTHENTICATED — the input that
+    // the late result for attempt 1 arrives authenticated — the input that
     // would make a stale, unguarded tick release attempt 2's child
     probe.resolve(AUTHENTICATED)
     await flush()
@@ -1876,18 +1829,15 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     await cleanup()
   })
 
-  // Phase 3 re-gate residual (check 3c): the supersede check used to be
-  // followed by `await import("node:child_process")` BEFORE the spawn and the
-  // cancelPoll claim. Two authorize() calls resuming in the same microtask
-  // window both observed `cancelPoll === undefined`, then both spawned — two
-  // `kiro-cli login` children alive, the first orphaned. The import is now
-  // hoisted above the check so check → spawn → claim is one synchronous
-  // segment. Negative witness: with the await back between check and spawn,
-  // firstChild is never killed (`toHaveBeenCalledTimes(1)` fails with 0).
+  // The supersede check → spawn → cancelPoll claim in authorize() must be one
+  // synchronous segment: an await between the check and the spawn lets two
+  // authorize() calls resuming in the same microtask window both observe
+  // `cancelPoll === undefined` and both spawn, leaving the first child orphaned
+  // (`firstChild.kill` would then never be called).
   //
-  // Harness note: the two calls are NOT started in the same tick. vitest's
+  // Harness note: the two calls are not started in the same tick. vitest's
   // manual mocks do not survive two concurrent dynamic imports of one module
-  // (the second `import("kiro-acp-ai-provider")` would resolve to the REAL
+  // (the second `import("kiro-acp-ai-provider")` would resolve to the real
   // SDK and spawn kiro-cli), so each call is parked at its entry probe first
   // and both probes are then released in one synchronous segment — that puts
   // both continuations in the same microtask window at the supersede check,
@@ -1917,14 +1867,14 @@ describe("async auth probe + callback guard (items 3+4)", () => {
     expect(mockVerifyAuthAsync).toHaveBeenCalledTimes(2)
     expect(mockExecFile).not.toHaveBeenCalled()
 
-    // release both in ONE synchronous segment: both continuations now reach
+    // release both in one synchronous segment: both continuations now reach
     // the supersede check in the same microtask window
     probeA.resolve(UNAUTHENTICATED)
     probeB.resolve(UNAUTHENTICATED)
     const [first, second] = await Promise.all([a, b])
     expect(mockExecFile).toHaveBeenCalledTimes(2)
 
-    // exactly ONE child alive: the first was killed exactly once, BEFORE the
+    // exactly one child alive: the first was killed exactly once, before the
     // second was spawned; the second is untouched
     expect(firstChild.kill).toHaveBeenCalledTimes(1)
     expect(firstChild.kill.mock.invocationCallOrder[0]).toBeLessThan(mockExecFile.mock.invocationCallOrder[1])

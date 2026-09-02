@@ -1,17 +1,17 @@
-// Integration `kiro` + Credential OAuth auth flow (v2, task 05).
+// Integration `kiro` + Credential OAuth auth flow.
 //
 // Auth authority is `verifyAuthAsync()` from kiro-acp-ai-provider (delegates
-// to kiro-cli). The ASYNC probe is used exclusively (beta.4 Item 3): the sync
-// `verifyAuth()` runs 2x execFileSync (kiro-cli `--version` + `whoami`, 10s
-// timeouts each) and, polled every 2s, froze the host event loop roughly every
-// 3rd tick. The SDK contract: identical AuthStatus + shared 5s memo, concurrent
-// callers coalesce, and it NEVER rejects. OpenCode never stores real AWS
-// tokens: the Credential.OAuth we return is a minimal presence record
-// (`access: "kiro-cli"`, `expires: 0`) and we deliberately do NOT implement the
-// Integration refresh callback — kiro-cli owns credential storage and refresh.
+// to kiro-cli). Only the async probe is used: the sync `verifyAuth()` runs two
+// blocking execFileSync calls (kiro-cli `--version` + `whoami`, 10s timeouts
+// each) and, polled every 2s, would stall the host event loop. The SDK
+// contract: identical AuthStatus + shared 5s memo, concurrent callers
+// coalesce, and it never rejects. OpenCode never stores real AWS tokens: the
+// Credential.OAuth returned here is a minimal presence record
+// (`access: "kiro-cli"`, `expires: 0`) and the Integration refresh callback is
+// deliberately not implemented — kiro-cli owns credential storage and refresh.
 //
 // The SDK import stays lazy so dist/server.js loads under plain Node without
-// touching kiro-acp-ai-provider at module import time (v1 discipline).
+// touching kiro-acp-ai-provider at module import time.
 import type { Credential, Integration, Plugin } from "@opencode-ai/plugin"
 import type { AuthStatus } from "kiro-acp-ai-provider"
 import type { ChildProcess } from "node:child_process"
@@ -21,11 +21,11 @@ export const KIRO_INTEGRATION_NAME = "Kiro"
 export const KIRO_OAUTH_METHOD_ID = "kiro-cli-login"
 export const KIRO_OAUTH_METHOD_LABEL = "Kiro CLI Login"
 
-// truthful docs URL for attempt display (v1 install-guidance URL; the login
-// browser window is opened by kiro-cli itself — we never invent a callback URL)
+// docs URL shown with the login attempt (the login browser window is opened by
+// kiro-cli itself; the plugin never invents a callback URL)
 export const KIRO_DOCS_URL = "https://kiro.dev/docs/cli/"
 
-// v1 poll cadence/limits — keep exact values
+// poll cadence/limits
 const POLL_INTERVAL_MS = 2_000
 const MAX_WAIT_MS = 120_000
 
@@ -38,10 +38,10 @@ const LOGIN_INSTRUCTIONS =
   "Complete Kiro authentication in the browser window that just opened (if no browser opened, run `kiro-cli login` in another terminal). Waiting for login..."
 const ALREADY_AUTHENTICATED_INSTRUCTIONS = "Already authenticated with Kiro CLI."
 
-// login-flow resources tracked for task 07's aggregated cleanup: the spawned
+// login-flow resources tracked for the aggregated server cleanup: the spawned
 // kiro-cli child, the poll timer, the pending-poll canceller (settles the
 // attempt promise on disposal so nothing awaits forever), and the integration
-// registration disposer. ONE instance is shared by every authorize() attempt,
+// registration disposer. One instance is shared by every authorize() attempt,
 // so an attempt must release its predecessor before claiming the fields (see
 // the supersede step in authorize()).
 export interface AuthResources {
@@ -94,7 +94,7 @@ function kiroCredential(): Credential.OAuth {
 
 // structural mirror of the installed d.ts `IntegrationOAuthAuthorization`
 // (dist/promise/integration.d.ts) — the type is not exported from the package
-// root, so we keep a local alias that stays assignable to it.
+// root, so a local alias that stays assignable to it is kept here.
 type OAuthAuthorization = {
   readonly url: string
   readonly instructions: string
@@ -104,27 +104,25 @@ type OAuthAuthorization = {
   readonly callback: Promise<Credential.OAuth>
 }
 
-// poll verifyAuthAsync() every 2s for up to 120s (v1 semantics, async probe).
-// Resolves with the credential on success; rejects on timeout with
-// manual-login guidance; rejects with a cancellation error when the plugin is
-// disposed mid-poll.
+// poll verifyAuthAsync() every 2s for up to 120s. Resolves with the credential
+// on success; rejects on timeout with manual-login guidance; rejects with a
+// cancellation error when the plugin is disposed mid-poll.
 //
-// The tick AWAITS the probe, which opens one hazard the sync version never
-// had: disposal (or supersession by a newer attempt) can fire `cancelPoll`
-// (rejecting the attempt) while a probe is in flight. After the await, the
-// tick checks that `resources.cancelPoll` is still ITS OWN canceller — any
-// other value means the attempt already settled (cancel, success, or timeout
-// disarmed it to undefined) or a newer attempt now owns the shared fields.
-// Either way the tick bails silently: NO timer re-arm (which would leak a
-// timer after cleanup, or run two poll loops against one resource set) and
-// NO second settle / no touching the successor's child.
+// The tick awaits the probe, so disposal (or supersession by a newer attempt)
+// can fire `cancelPoll` (rejecting the attempt) while a probe is in flight.
+// After the await, the tick checks that `resources.cancelPoll` is still its
+// own canceller — any other value means the attempt already settled (cancel,
+// success, or timeout disarmed it to undefined) or a newer attempt now owns
+// the shared fields. Either way the tick bails silently: no timer re-arm
+// (which would leak a timer after cleanup, or run two poll loops against one
+// resource set) and no second settle / no touching the successor's child.
 function pollForLogin(
   verifyAuth: () => Promise<AuthStatus>,
   resources: AuthResources,
 ): Promise<Credential.OAuth> {
   return new Promise<Credential.OAuth>((resolve, reject) => {
     // elapsed time is measured from promise construction, so probe duration
-    // counts against the 120s budget exactly as the sync spawn time did
+    // counts against the 120s budget
     const start = Date.now()
 
     const cancel = (reason?: Error) => {
@@ -139,7 +137,7 @@ function pollForLogin(
       // cancelled, settled, or superseded mid-probe: no re-arm, no settle
       if (resources.cancelPoll !== cancel) return
       if (status.authenticated) {
-        // disarm the canceller BEFORE releasing so release cannot settle the
+        // disarm the canceller before releasing so release cannot settle the
         // attempt as cancelled ahead of the real resolution
         resources.cancelPoll = undefined
         releaseLoginResources(resources)
@@ -175,14 +173,14 @@ function pollForLogin(
 //    manual-login guidance
 // 6. superseded      -> a new attempt while one is pending (user abandoned the
 //    browser flow and reconnected) first kills the previous child, clears its
-//    timer, and rejects its callback with a supersession error, THEN spawns;
+//    timer, and rejects its callback with a supersession error, then spawns;
 //    `state.auth` is shared, so skipping this step would orphan the previous
 //    child (no owner → never killed) and cross-wire the two polls' fields
 async function authorize(resources: AuthResources): Promise<OAuthAuthorization> {
   // async probe only — the sync verifyAuth is never imported by the plugin
   const { verifyAuthAsync } = await import("kiro-acp-ai-provider")
   // imported up-front (not at spawn time) on purpose: the supersede check →
-  // spawn → cancelPoll claim below must be ONE synchronous segment. An await
+  // spawn → cancelPoll claim below must be one synchronous segment. An await
   // between them lets two authorize() calls in the same microtask window both
   // see `cancelPoll === undefined`, then both spawn — two `kiro-cli login`
   // children alive, the first one orphaned.
@@ -201,10 +199,10 @@ async function authorize(resources: AuthResources): Promise<OAuthAuthorization> 
     }
   }
 
-  // state 6: supersede any in-flight attempt BEFORE claiming the shared
-  // fields. Rejecting the previous callback here is safe under Req 6 — its
-  // derived promise was guarded when it was handed out.
-  // INVARIANT: no await between this check and the cancelPoll claim inside
+  // state 6: supersede any in-flight attempt before claiming the shared
+  // fields. Rejecting the previous callback here is safe: its derived promise
+  // was guarded when it was handed out.
+  // Invariant: no await between this check and the cancelPoll claim inside
   // pollForLogin() (which sets `resources.cancelPoll` synchronously).
   if (resources.cancelPoll !== undefined) {
     releaseLoginResources(resources, new Error(SUPERSEDED_MESSAGE))
@@ -217,9 +215,9 @@ async function authorize(resources: AuthResources): Promise<OAuthAuthorization> 
   })
 
   const callback = pollForLogin(verifyAuthAsync, resources)
-  // Guard the DERIVED promise: an abandoned login (timeout/cancel) must not
+  // Guard the derived promise: an abandoned login (timeout/cancel) must not
   // surface as an unhandled rejection before the host attaches its handler.
-  // The ORIGINAL callback is returned so the host still observes the rejection.
+  // The original callback is returned so the host still observes the rejection.
   callback.catch(() => {})
   return { url: KIRO_DOCS_URL, instructions: LOGIN_INSTRUCTIONS, mode: "auto", callback }
 }
@@ -236,9 +234,7 @@ export async function registerAuth(
       integration.name = KIRO_INTEGRATION_NAME
     })
     // forms shape per installed d.ts IntegrationOAuthMethodRegistration
-    // (dist/promise/integration.d.ts:43-49) — the v1-era select-question API
-    // was deleted upstream (2026-08-23 re-pin) and the sidebar consent
-    // question is gone with it. Our flow needs no form fields, so the
+    // (dist/promise/integration.d.ts). This flow needs no form fields, so the
     // optional `form` is omitted and the Form.Answer argument is unused.
     draft.method.update({
       integrationID: KIRO_INTEGRATION_ID,

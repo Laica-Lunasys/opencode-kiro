@@ -13,14 +13,14 @@ import {
   type SessionCredits,
 } from "../src/tui/credits"
 
-// Credit-helper + TUI wiring tests (task 11). Fixtures are plain content-part
-// shaped objects carrying key-unwrapped v2 state (`part.state.credits` /
-// `part.state.creditsUnit`) - never `part.state.kiro` and never the v1
+// Credit-helper + TUI wiring tests. Fixtures are plain content-part shaped
+// objects carrying key-unwrapped state (`part.state.credits` /
+// `part.state.creditsUnit`) - never `part.state.kiro` and never the legacy
 // `part.metadata.kiro` (both are forbidden read shapes). Core hazard is dual
 // emission: one message carries the same turn total on its text and reasoning
 // parts, so credits count once per message (last carrier wins).
 
-/** Part-shaped fixture carrying key-unwrapped v2 credit state. */
+/** Part-shaped fixture carrying key-unwrapped credit state. */
 const statePart = (type: string, state: unknown): CreditPart => ({ type, state })
 
 const assistant = (id: string): CreditMessage => ({ id, role: "assistant" })
@@ -45,7 +45,7 @@ describe("readPartCredits (v2 state shape)", () => {
   })
 
   test("rejects the wrapped state.kiro shape", () => {
-    // v2 core stores metadata[providerMetadataKey] key-unwrapped; a provider-keyed
+    // the host stores metadata[providerMetadataKey] key-unwrapped; a provider-keyed
     // nest must never be read
     const part = statePart("text", { kiro: { credits: 1, creditsUnit: "credit" } })
 
@@ -236,7 +236,7 @@ describe("spendLines", () => {
     ])
   })
 
-  test("BOTH: cost>0 AND credits present => two stacked lines (dollars then credits)", () => {
+  test("both: cost>0 and credits present => two stacked lines (dollars then credits)", () => {
     expect(spendLines({ cost: 5, credits: sc({ total: 100, unit: "credit", present: true }) })).toEqual([
       "$5.00 spent",
       "100 credits",
@@ -247,21 +247,21 @@ describe("spendLines", () => {
     expect(spendLines({ cost: 0, credits: sc() })).toEqual(["$0.00 spent"])
   })
 
-  test("BOTH singular: pluralization reuses formatCredits (total 1 => '1 credit')", () => {
+  test("both singular: pluralization reuses formatCredits (total 1 => '1 credit')", () => {
     expect(spendLines({ cost: 5, credits: sc({ total: 1, unit: "credit", present: true }) })).toEqual([
       "$5.00 spent",
       "1 credit",
     ])
   })
 
-  test("BOTH unit-less: bare number on the credits line", () => {
+  test("both unit-less: bare number on the credits line", () => {
     expect(spendLines({ cost: 5, credits: sc({ total: 12, unit: undefined, present: true }) })).toEqual([
       "$5.00 spent",
       "12",
     ])
   })
 
-  test("zero-credit-but-present Kiro turn WITH cost>0 stays in the BOTH branch", () => {
+  test("zero-credit-but-present Kiro turn with cost>0 stays in the both branch", () => {
     expect(spendLines({ cost: 5, credits: sc({ total: 0, unit: "credit", present: true }) })).toEqual([
       "$5.00 spent",
       "0 credits",
@@ -273,15 +273,13 @@ describe("spendLines", () => {
   })
 })
 
-// --- TUI setup/cleanup suite (task 10 wiring; TWO append claims: `sidebar.content`
-// + `prompt.footer.status` — the chip moved to the prompt footer row (v1 placement
-// restored) in the pre-publish amendment; `ui.slot` takes a claim object and the old
-// `(name, render)` signature is gone) ---------------------------------------------
+// --- TUI setup/cleanup suite (two append claims: `sidebar.content` +
+// `prompt.footer.status`; `ui.slot` takes a claim object) -----------------------
 // The view modules lazy-import @opentui/solid inside setup. The box view is mocked
 // as the test seam (marker node exposing the injected credits accessor + theme
-// tokens); the chip view stays REAL against lightweight @opentui/solid + solid-js
+// tokens); the chip view stays real against lightweight @opentui/solid + solid-js
 // fakes so its single-line/collapse/theming behavior is testable without the
-// Bun-native renderer. Host rendering itself stays task 13/28's scope.
+// Bun-native renderer. Host rendering itself is out of scope here.
 
 /** Marker node returned by the mocked box-view factory; exposes accessor + tokens. */
 interface FakeViewNode {
@@ -311,7 +309,7 @@ vi.mock("@opentui/solid", () => ({
 }))
 
 // Deterministic client-like solid semantics: plain Node resolves solid-js to the
-// once-eval SERVER build (frozen memos), so the fake keeps memos as pass-through
+// once-eval server build (frozen memos), so the fake keeps memos as pass-through
 // accessors and signals as plain boxes — matching how the host's client build
 // re-evaluates render-path reads.
 vi.mock("solid-js", () => ({
@@ -336,7 +334,7 @@ vi.mock("../src/tui/credits-box-view.js", () => ({
   }),
 }))
 
-/** Minimal durable v2 message shape served by the mock `data.session.message.list`. */
+/** Minimal durable message shape served by the mock `data.session.message.list`. */
 interface FixtureMessage {
   id: string
   type: string
@@ -455,14 +453,13 @@ const renderSidebar = (mock: MockTuiContext, props: Record<string, unknown>): ((
   renderSlot(mock, "sidebar.content", props) as () => FakeViewNode | null
 
 describe("tui setup registrations", () => {
-  test("setup registers TWO append claims (sidebar.content + prompt.footer.status) and one text-ended listener", async () => {
+  test("setup registers two append claims (sidebar.content + prompt.footer.status) and one text-ended listener", async () => {
     const mock = makeTuiContext()
 
     const cleanup = await setupPlugin(mock)
 
-    // Amended surface: box in the sidebar + chip in the prompt footer row, both ADDITIVE
-    // (`append` is the only placement key on each claim — never `replace`; req. 17).
-    // NOT session.composer.top: the chip moved to the footer (v1 placement restored).
+    // box in the sidebar + chip in the prompt footer row, both additive
+    // (`append` is the only placement key on each claim — never `replace`)
     expect(mock.slots.map((slot) => slot.claim.append)).toEqual(["sidebar.content", "prompt.footer.status"])
     for (const slot of mock.slots) {
       expect(Object.keys(slot.claim).sort()).toEqual(["append", "render"])
@@ -478,8 +475,8 @@ describe("tui setup registrations", () => {
 
     const cleanup = await setupPlugin(mock)
 
-    // the `(name, render)` signature is gone at dev-17968; a string first arg
-    // or a second render arg would silently no-op in the host
+    // the host only accepts a claim object; a string first arg or a second
+    // render arg would silently no-op in the host
     expect(mock.slotCalls).toHaveLength(2)
     for (const args of mock.slotCalls) {
       expect(args).toHaveLength(1)
@@ -489,7 +486,7 @@ describe("tui setup registrations", () => {
   })
 
   test("text-ended handler records to the store; malformed payloads never throw", async () => {
-    // durable text part has NO state (the live reducer bug this handler works around)
+    // durable text part has no state (the live reducer bug this handler works around)
     const mock = makeTuiContext({
       messages: { sess: [{ id: "msg_1", type: "assistant", content: [{ type: "text", text: "live" }] }] },
     })
@@ -537,7 +534,7 @@ describe("tui setup registrations", () => {
     // assembly never forces a durable sync (explicit-refresh fallback only)
     expect(mock.sync).not.toHaveBeenCalled()
     // session-less props contribute nothing (both surfaces; on the footer chip
-    // sessionID is OPTIONAL in PromptFooterInput — absent means withheld, not a crash)
+    // sessionID is optional in PromptFooterInput — absent means withheld, not a crash)
     expect(renderSidebar(mock, {})()).toBeNull()
     expect((renderSlot(mock, "prompt.footer.status", { mode: "normal" }) as () => unknown)()).toBeNull()
     await cleanup()
@@ -604,9 +601,9 @@ describe("footer chip claim (prompt.footer.status)", () => {
   })
 
   test("mode behavior: chip renders identically in normal and shell modes (mode ignored)", async () => {
-    // Decision (documented in tui.ts): the chip renders in BOTH modes — the host's
-    // footer children don't change by mode at the pin, and collapsing on shell toggle
-    // would only cause a layout jump.
+    // Decision (documented in tui.ts): the chip renders in both modes — the host's
+    // footer children don't change by mode, and collapsing on shell toggle would
+    // only cause a layout jump.
     const mock = makeTuiContext({
       messages: {
         sess: [{ id: "msg_1", type: "assistant", content: [statePart("text", { credits: 3, creditsUnit: "credit" })] }],
@@ -642,7 +639,7 @@ describe("theme feature detection", () => {
   })
 
   test("absent or misshapen theme falls back to default styling without throwing", async () => {
-    // rendering never DEPENDS on the theme (req. 12): no theme and junk themes
+    // rendering never depends on the theme: no theme and junk themes
     // behave identically — no tokens, no fg, no throw
     for (const theme of [undefined, null, 42, "dark", {}, { text: null }, { text: { default: "", subdued: 7 } }]) {
       const mock = makeTuiContext({ messages: KIRO_MESSAGES, ...(theme !== undefined ? { theme } : {}) })
@@ -660,7 +657,7 @@ describe("theme feature detection", () => {
 })
 
 describe("storage.memory feature detection", () => {
-  test("memory-backed store is keyed 'transient-credits' and survives cleanup BY DESIGN", async () => {
+  test("memory-backed store is keyed 'transient-credits' and survives cleanup by design", async () => {
     const mock = makeTuiContext({
       messages: { sess: [{ id: "msg_1", type: "assistant", content: [{ type: "text", text: "live" }] }] },
       withMemoryStorage: true,
@@ -676,8 +673,8 @@ describe("storage.memory feature detection", () => {
 
     await cleanup()
 
-    // the memory store is shared with the NEXT plugin generation (hot reload),
-    // so cleanup must NOT clear it — a fresh setup on the same storage still
+    // the memory store is shared with the next plugin generation (hot reload),
+    // so cleanup must not clear it — a fresh setup on the same storage still
     // sees the recorded transient credits
     const rerun = await setupPlugin(mock)
     expect(renderSidebar(mock, { sessionID: "sess" })!()!.credits().total).toBe(5)
@@ -696,7 +693,7 @@ describe("storage.memory feature detection", () => {
 
     await cleanup()
 
-    expect(credits()).toBeNull() // v1 behavior preserved: store emptied
+    expect(credits()).toBeNull() // per-setup store emptied on cleanup
   })
 })
 
@@ -717,7 +714,7 @@ describe("tui cleanup", () => {
       (error: unknown) => error instanceof AggregateError && error.errors.length === 1,
     )
 
-    // BOTH claims (sidebar box + footer chip) unregistered exactly once
+    // both claims (sidebar box + footer chip) unregistered exactly once
     expect(mock.slots).toHaveLength(2)
     for (const slot of mock.slots) expect(slot.unregisterCalls).toBe(1)
     expect(mock.listeners[0]!.unsubscribeCalls).toBe(1)
@@ -742,7 +739,7 @@ describe("dist/tui.js module isolation", () => {
   const importDist = (name: string): Promise<Record<string, unknown>> =>
     import(pathToFileURL(join(ROOT, "dist", name)).href) as Promise<Record<string, unknown>>
 
-  test("dist/tui.js loads under plain Node with the v2 { id, setup } shape", async () => {
+  test("dist/tui.js loads under plain Node with the { id, setup } shape", async () => {
     const mod = await importDist("tui.js")
 
     const plugin = mod.default as Record<string, unknown>

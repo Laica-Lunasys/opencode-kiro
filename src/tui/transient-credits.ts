@@ -1,16 +1,16 @@
-// PURE transient-credit store: works around the live TUI `session.text.ended` reducer bug
-// (packages/tui/src/context/data.tsx copies the completed text but omits event.data.state, while the
-// reasoning branch does copy state). Until the upstream fix ships, a text-only response lacks credits
-// in live TUI state even though the durable record has them; this module retains the event's credit
-// state and merges it with durable data under the one-carrier-per-assistant-message rule.
+// Pure transient-credit store: works around the live TUI `session.text.ended` reducer, which
+// copies the completed text but omits `event.data.state` (the reasoning branch does copy state).
+// A text-only response therefore lacks credits in live TUI state even though the durable record
+// has them; this module retains the event's credit state and merges it with durable data under
+// the one-carrier-per-assistant-message rule.
 //
 // Invariants:
-//   - Content parts are ID-less at the pinned SHA: tuples key by (sessionID, assistantMessageID, ordinal)
-//     ONLY — never by a content-part ID (see the KeyParts type-level guard below).
-//   - Durable `part.state` is AUTHORITATIVE: when any durable part of a message carries valid credit
+//   - Content parts are ID-less: tuples key by (sessionID, assistantMessageID, ordinal) only —
+//     never by a content-part ID (see the KeyParts type-level guard below).
+//   - Durable `part.state` is authoritative: when any durable part of a message carries valid credit
 //     state, the durable value is used and transient values for that message are ignored (merge) and
-//     deleted (reconcile). Transient and durable are NEVER summed for one message.
-//   - No solid/opentui/plugin imports: stays plain-Node testable (task 10 wires it into the TUI host).
+//     deleted (reconcile). Transient and durable are never summed for one message.
+//   - No solid/opentui/plugin imports: stays plain-Node testable.
 
 import {
   messageCredits,
@@ -20,7 +20,7 @@ import {
   type SessionCredits,
 } from "./credits.js"
 
-// Type-level guard rail: a transient key derives from EXACTLY (sessionID, assistantMessageID, ordinal).
+// Type-level guard rail: a transient key derives from exactly (sessionID, assistantMessageID, ordinal).
 // There is no content-part-ID position; adding one would change this tuple and every call site.
 type KeyParts = readonly [sessionID: string, assistantMessageID: string, ordinal: number]
 
@@ -116,7 +116,7 @@ function transientForMessage(
 
 /**
  * Session rollup over durable messages merged with transient tuples, one carrier per assistant
- * message: if ANY durable part of a message carries valid credit state, the durable value is used
+ * message: if any durable part of a message carries valid credit state, the durable value is used
  * (authoritative); otherwise the message's transient value applies. Transient and durable are never
  * summed for the same message, and transient tuples for messages absent from `durableMessages` never
  * count. Same result shape as `sumSessionCredits`.

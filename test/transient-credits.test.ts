@@ -10,18 +10,18 @@ import {
   type TextEndedEvent,
 } from "../src/tui/transient-credits"
 
-// Transient text-ended store tests (task 09). The store works around the live
-// TUI reducer bug (session.text.ended drops event.data.state) and must uphold
-// two invariants from the migration doc's Credits test-matrix rows:
-//   - durable part state is AUTHORITATIVE: transient and durable values are
+// Transient text-ended store tests. The store works around the live TUI
+// reducer (session.text.ended drops event.data.state) and must uphold two
+// invariants:
+//   - durable part state is authoritative: transient and durable values are
 //     never summed for one message, and
 //   - reconciliation deletes superseded/orphaned (sessionID, assistantMessageID,
 //     ordinal) tuples without ever changing the displayed total.
 
-/** Part-shaped fixture carrying key-unwrapped v2 credit state. */
+/** Part-shaped fixture carrying key-unwrapped credit state. */
 const statePart = (type: "text" | "reasoning", state: Record<string, unknown>): CreditPart => ({ type, state })
 
-/** Durable assistant message with inlined content parts (v2 SessionMessageInfo shape). */
+/** Durable assistant message with inlined content parts (SessionMessageInfo shape). */
 const assistant = (id: string, content: ReadonlyArray<CreditPart> = []): DurableMessage => ({
   id,
   type: "assistant",
@@ -117,7 +117,7 @@ describe("mergedMessageCredits", () => {
   })
 
   test("reasoning-live durable state + transient text tuple for the same message counts once", () => {
-    // dual-carrier: the reasoning reducer branch DOES copy state live, while the
+    // dual-carrier: the reasoning reducer branch does copy state live, while the
     // text carrier arrives only via the transient workaround
     const store = createTransientStore()
     recordTextEnded(store, textEnded("sess", "msg_1", 1, { credits: 4, creditsUnit: "credit" }))

@@ -1,8 +1,6 @@
-// v2 server plugin: final setup composition (task 07). Task 05 registered the
-// Integration/auth flow, task 06 the catalog transform + discovery lifecycle,
-// task 07 the AISDK `sdk` hook plus the per-location ServerState and the
-// aggregated cleanup builder (src/server/lifecycle.ts). Remaining v1 hook
-// logic lives at `git show main:src/server.ts`.
+// Server plugin: setup composition. Registers the Integration/auth flow, the
+// catalog transform + discovery lifecycle, and the AISDK hooks over one
+// per-location ServerState with an aggregated cleanup (src/server/lifecycle.ts).
 //
 // Installed-types note: `@opencode-ai/plugin` (root promise export) namespaces its
 // types as `Plugin.Plugin` / `Plugin.Context` / `Plugin.Cleanup` via
@@ -14,14 +12,14 @@ import { type KiroPluginOptions, registerDiscovery } from "./server/discovery.js
 import { buildCleanup, createServerState } from "./server/lifecycle.js"
 
 // Plugin options (npm channel only — bundled/builtin plugins receive {}).
-// Both v2 mock contexts omit `options` entirely, and older hosts may too:
-// the ?? {} guard is REQUIRED. No `cwd` option by design — per-location
+// Some hosts omit `context.options` entirely, so the ?? {} guard at the call
+// site is required. No `cwd` option by design — the per-location
 // integration.list() derivation is strictly better (discovery.ts).
 //
-// Exactly three options (Req 9): `agent` (default "opencode"), `mcpTimeout`
-// (default 45), `discover` (default true). Type-invalid values fall back to
-// the defaults and unknown keys are ignored silently (fail-open, consistent
-// with plugin discipline). `trustAllTools` is NOT exposed.
+// Exactly three options: `agent` (default "opencode"), `mcpTimeout` (default
+// 45), `discover` (default true). Type-invalid values fall back to the
+// defaults and unknown keys are ignored silently (fail open). `trustAllTools`
+// is not exposed.
 function resolveOptions(raw: Record<string, unknown>): KiroPluginOptions {
   return {
     agent: typeof raw.agent === "string" && raw.agent !== "" ? raw.agent : "opencode",
@@ -36,15 +34,15 @@ function resolveOptions(raw: Record<string, unknown>): KiroPluginOptions {
 // (captures cwd from integration.list().location, registers the catalog
 // transform + event consumer, kicks off one initial discovery when already
 // connected and `discover` is not false) -> registerAisdkHook (plugin-owned
-// createKiroAcp provider) -> return the ONE aggregated, idempotent cleanup.
+// createKiroAcp provider) -> return the one aggregated, idempotent cleanup.
 //
 // Failure path: if any registration throws mid-setup, the partial cleanup runs
 // over the disposers registered so far (no leaked registrations) and the
-// ORIGINAL setup error is rethrown; cleanup failures during that unwind are
+// original setup error is rethrown; cleanup failures during that unwind are
 // swallowed so they cannot mask it.
 const plugin: Plugin.Plugin = {
   id: "kiro",
-  // tui: true (dist/promise/plugin.d.ts:40) — the host auto-loads this
+  // tui: true (dist/promise/plugin.d.ts) — the host auto-loads this
   // package's `./tui` entrypoint for npm-channel installs (single config entry)
   tui: true,
   async setup(context: Plugin.Context): Promise<Plugin.Cleanup> {
@@ -69,8 +67,8 @@ const plugin: Plugin.Plugin = {
 
 // default export drives opencode's plugin loader via the `./server` exports
 // subpath. The exports map deliberately has no "." key, so there is no root
-// fallback (HOST_E2E O1).
+// fallback.
 export default plugin
 
-// named export, same reference as the default so the two can't drift (kept for v1 compatibility)
+// named export, same reference as the default so the two can't drift (kept for backward compatibility)
 export const KiroAuthPlugin = plugin

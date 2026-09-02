@@ -1,5 +1,5 @@
 // pure credit helpers (no opentui/solid imports, so they test under plain Node).
-// v2 core stores metadata[providerMetadataKey] key-unwrapped, so credits live at part.state.credits /
+// The host stores metadata[providerMetadataKey] key-unwrapped, so credits live at part.state.credits /
 // part.state.creditsUnit on text and reasoning content parts — never nested under a provider key.
 // dedupe: count once per message; text and reasoning parts carry the same turn total (dual emission), so last-carrier-wins and parts are never summed.
 

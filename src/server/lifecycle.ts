@@ -1,12 +1,12 @@
-// Per-location server state + aggregated idempotent cleanup builder (v2, task 07).
+// Per-location server state + aggregated idempotent cleanup builder.
 //
 // One setup call = one location = one ServerState instance. Nothing in the
-// server modules is module-global except pure helpers and constants — v2 may
-// invoke setup once per location, and each invocation owns its resources.
+// server modules is module-global except pure helpers and constants — the host
+// may invoke setup once per location, and each invocation owns its resources.
 //
-// The state consolidates everything tasks 05/06/07 track, via the typed
-// resource records those modules already own (kept nested rather than
-// flattened so auth.ts/discovery.ts keep sole ownership of their fields):
+// The state consolidates everything the auth, discovery, and aisdk modules
+// track, via the typed resource records those modules own (kept nested rather
+// than flattened so auth.ts/discovery.ts keep sole ownership of their fields):
 // - cwd / snapshot / generation / inflight  -> discovery.state
 // - eventIterator / eventTask               -> discovery
 // - loginChild / pollTimer / cancelPoll     -> auth
@@ -39,7 +39,7 @@ export function createServerState(): ServerState {
   }
 }
 
-// attempt EVERY disposer even if one fails. Each registered disposer already
+// attempt every disposer even if one fails. Each registered disposer already
 // covers its own resource contract internally with the same attempt-all
 // discipline: auth (kill login child, clear poll timer, settle pending poll,
 // dispose the integration registration), discovery (final generation bump so
@@ -62,7 +62,7 @@ async function disposeAll(disposers: ReadonlyArray<() => void | Promise<void>>):
 }
 
 // aggregated idempotent cleanup: the first call marks the state disposed and
-// builds/stores ONE cleanup promise that attempts every resource; later calls
+// builds/stores one cleanup promise that attempts every resource; later calls
 // return that same promise, so each underlying resource is disposed at most
 // once. Also used for the setup failure path (partial cleanup over whatever
 // disposers were registered before the failure).

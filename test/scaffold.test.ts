@@ -8,10 +8,10 @@ import { promisify } from "node:util"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 
 // Built-package smoke tests: run `npm run build` first. Covers exports
-// resolution, discoverable metadata, exact v2-sensitive pins, the installed
-// plugin tarball's v2 exports layout, emitted artifacts, the v2 { id, setup }
-// module contracts, idempotent cleanup, module-kind isolation, and
-// host-package externalization.
+// resolution, discoverable metadata, exact host-sensitive pins, the installed
+// plugin tarball's exports layout, emitted artifacts, the { id, setup } module
+// contracts, idempotent cleanup, module-kind isolation, and host-package
+// externalization.
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -35,7 +35,13 @@ interface PackageJson {
 const readPkg = async (): Promise<PackageJson> =>
   JSON.parse(await readFile(join(ROOT, "package.json"), "utf8")) as PackageJson
 
-/** v2 plugin module shape: `{ id, setup }` with a callable setup. */
+/** the package version, read once from package.json — the single source every version-bearing assertion derives from */
+const PKG_VERSION = (await readPkg()).version ?? ""
+
+/** the release-notes file for the current version */
+const RELEASE_NOTES_FILE = `RELEASE_NOTES_${PKG_VERSION}.md`
+
+/** plugin module shape: `{ id, setup }` with a callable setup. */
 interface PluginModule {
   id?: unknown
   setup?: unknown
@@ -57,7 +63,7 @@ const withoutImportSpecifiers = (code: string): string =>
   )
 
 /**
- * Spec-mandated string constants that legitimately carry the SDK package name
+ * Package-name string constants that legitimately carry the SDK package name
  * in module bodies: the `event.package` match value (bare name) and the
  * `Provider.Info.package` value (`aisdk:`-prefixed). Blank their quoted
  * literals so the zero-residue check flags only real bundling. Longest first
@@ -72,7 +78,7 @@ const withoutMandatedLiterals = (code: string): string =>
   )
 
 /**
- * Minimal mock v2 Plugin.Context: just enough surface for the server setup's
+ * Minimal mock Plugin.Context: just enough surface for the server setup's
  * three registrations (integration/auth, catalog/discovery, aisdk hook) plus
  * the event consumer. Registrations return async disposers; the event stream
  * ends immediately; the connection reads inactive so no discovery kicks off.
@@ -95,9 +101,8 @@ const makeMinimalContext = (): unknown => {
 }
 
 /**
- * Minimal mock v2 TUI Plugin.Context: the host always supplies `data` and
- * `ui` (verified live in HOST_E2E_REPORT.md item 9's setup invocation), so
- * the setup contract may rely on them. Event subscription and slot
+ * Minimal mock TUI Plugin.Context: the host always supplies `data` and `ui`,
+ * so the setup contract may rely on them. Event subscription and slot
  * registration return unsubscribe functions; durable reads return no
  * messages.
  */
@@ -135,8 +140,8 @@ describe("scaffold package contract", () => {
   })
 
   test("credits-chip chunk is emitted alongside the box chunk (footer credits chip)", async () => {
-    // the chip view (claimed at prompt.footer.status since the pre-publish
-    // amendment) lazy-imports as its own chunk — both view chunks must be emitted.
+    // the chip view (claimed at prompt.footer.status) lazy-imports as its own
+    // chunk — both view chunks must be emitted.
     const distFiles = await readdir(join(ROOT, "dist"))
 
     expect(distFiles.some((file) => file.includes("credits-chip-view"))).toBe(true)
@@ -144,14 +149,15 @@ describe("scaffold package contract", () => {
   })
 })
 
-describe("pins and installed tarball (task 02)", () => {
-  test("version is 0.5.0-beta.3", async () => {
+describe("dependency pins and installed plugin API", () => {
+  test("version is a valid semver string", async () => {
     const pkg = await readPkg()
 
-    expect(pkg.version).toBe("0.5.0-beta.3")
+    expect(pkg.version).toBe(PKG_VERSION)
+    expect(PKG_VERSION).toMatch(/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/)
   })
 
-  test("v2-sensitive deps are exact pins", async () => {
+  test("host-sensitive deps are exact pins", async () => {
     const pkg = await readPkg()
 
     // exact expected specifier per dependency block; no `^`/`~`/`*`, no dist-tag
@@ -170,13 +176,13 @@ describe("pins and installed tarball (task 02)", () => {
       expect(specifier).not.toMatch(/^(next|latest|beta|dev)$/)
     }
 
-    // the plugin pin is an exact dev-channel version STRING (never the `dev`
-    // dist-tag): the shape lock plus the equality above pins the task-30
-    // verified `0.0.0-dev-18686` (Phase 9 re-pin, PINNED_VERSIONS.md)
+    // the plugin pin is an exact dev-channel version string (never the `dev`
+    // dist-tag): the shape check plus the equality above pins the verified
+    // `0.0.0-dev-18686`
     expect(pkg.devDependencies?.["@opencode-ai/plugin"]).toMatch(/^0\.0\.0-dev-\d+$/)
   })
 
-  test("installed plugin package has the dev-18686 v2 exports layout", async () => {
+  test("installed plugin package has the current exports layout", async () => {
     const installed = JSON.parse(
       await readFile(join(ROOT, "node_modules", "@opencode-ai", "plugin", "package.json"), "utf8"),
     ) as { exports?: Record<string, unknown> }
@@ -185,25 +191,25 @@ describe("pins and installed tarball (task 02)", () => {
     expect(subpaths).toContain(".")
     expect(subpaths).toContain("./effect")
     expect(subpaths).toContain("./tui")
-    // the stale v1-era layout routes the promise API through ./v2/promise; reject it
+    // an older layout routed the promise API through ./v2/promise; reject it
     expect(subpaths).not.toContain("./v2/promise")
-    // the dev channel dropped the ./v1 compatibility subpath entirely (since dev-17968)
+    // the dev channel dropped the ./v1 compatibility subpath entirely
     expect(subpaths).not.toContain("./v1")
   })
 })
 
-describe("v2 module contracts (task 03)", () => {
+describe("module entry contracts", () => {
   test("server entry exports { id: 'kiro', tui: true, setup }", async () => {
     const mod = await importDist("server.js")
 
     expect(mod.default.id).toBe("kiro")
     expect(typeof mod.default.setup).toBe("function")
-    // dev-17968 auto-load flag: the host loads ./tui itself for npm installs
+    // auto-load flag: the host loads ./tui itself for npm installs
     expect(mod.default.tui).toBe(true)
     // named export kept for compatibility; same reference as the default so they can't drift
     expect(mod.KiroAuthPlugin).toBe(mod.default)
-    // loader rejects modules exposing both kinds: no v1 wrapper properties anywhere
-    // (`tui` above is the boolean flag, never a v1 module-kind object)
+    // loader rejects modules exposing both kinds: no legacy wrapper properties anywhere
+    // (`tui` above is the boolean flag, never a module-kind object)
     expect("server" in mod.default).toBe(false)
   })
 
@@ -230,9 +236,9 @@ describe("v2 module contracts (task 03)", () => {
       const residue = withoutMandatedLiterals(withoutImportSpecifiers(code))
 
       // Externals may appear as import specifiers (which must survive the
-      // build — server.js lazily imports the SDK) or as the spec-mandated
-      // package-name constants; any OTHER residual mention means the host/SDK
-      // package was bundled instead of left external.
+      // build — server.js lazily imports the SDK) or as the package-name
+      // constants; any other residual mention means the host/SDK package was
+      // bundled instead of left external.
       expect(residue).not.toContain("kiro-acp-ai-provider")
       expect(residue).not.toContain("@opencode-ai/plugin")
       expect(residue).not.toContain("@opentui")
@@ -248,7 +254,7 @@ describe("v2 module contracts (task 03)", () => {
     const mod = await importDist("server.js")
     const setup = mod.default.setup as (context: unknown) => Promise<() => Promise<void>>
 
-    // server setup registers auth/discovery/aisdk, so it needs the minimal v2 context
+    // server setup registers auth/discovery/aisdk, so it needs the minimal context
     const cleanup = await setup(makeMinimalContext())
 
     await expect(cleanup()).resolves.toBeUndefined()
@@ -266,12 +272,12 @@ describe("v2 module contracts (task 03)", () => {
   })
 })
 
-// --- Phase 4 packaging / entry-resolution tests (task 14) ---
+// --- packaging / entry-resolution tests ---
 
 const execFileAsync = promisify(execFile)
 const IS_WIN = process.platform === "win32"
 
-/** Run npm via execFile; Windows needs npm.cmd + shell (see CI note in task file). */
+/** Run npm via execFile; Windows needs npm.cmd + shell. */
 const runNpm = async (args: string[], cwd: string): Promise<string> => {
   const { stdout } = await execFileAsync(IS_WIN ? "npm.cmd" : "npm", args, {
     cwd,
@@ -282,7 +288,7 @@ const runNpm = async (args: string[], cwd: string): Promise<string> => {
 }
 
 /**
- * Run an ESM snippet in a REAL child Node process with the given cwd. Bare
+ * Run an ESM snippet in a real child Node process with the given cwd. Bare
  * specifiers then resolve with native Node semantics from that directory —
  * vitest's own resolver (which sees this repo's node_modules) never
  * participates, so the probe behaves exactly like the OpenCode host loading
@@ -293,8 +299,8 @@ const nodeProbe = async (cwd: string, code: string): Promise<string> => {
   return stdout.trim()
 }
 
-/** v2-sensitive pins derived from package.json — the single source the docs must mirror. */
-const v2SensitivePins = async (): Promise<Array<[name: string, version: string]>> => {
+/** host-sensitive pins derived from package.json — the single source the docs must mirror. */
+const hostSensitivePins = async (): Promise<Array<[name: string, version: string]>> => {
   const pkg = await readPkg()
   return [
     ["@opencode-ai/plugin", pkg.devDependencies?.["@opencode-ai/plugin"] ?? ""],
@@ -306,14 +312,14 @@ const v2SensitivePins = async (): Promise<Array<[name: string, version: string]>
 
 const TESTED_OPENCODE_SHA = "8ba434b5973856b2f32b8cd3543e154b25c413e6"
 
-describe("packaging and docs invariants (task 12)", () => {
+describe("packaging and docs invariants", () => {
   test("pack payload is dist-only", async () => {
     const stdout = await runNpm(["pack", "--dry-run", "--json"], ROOT)
     const [manifest] = JSON.parse(stdout) as Array<{ filename: string; files: Array<{ path: string }> }>
     const paths = manifest.files.map((file) => file.path)
 
-    // tarball name embeds the pinned prerelease version
-    expect(manifest.filename).toBe("opencode-kiro-0.5.0-beta.3.tgz")
+    // tarball name embeds the package version
+    expect(manifest.filename).toBe(`opencode-kiro-${PKG_VERSION}.tgz`)
 
     // exhaustive whitelist: built artifacts + the three npm-mandated metadata files
     const stray = paths.filter(
@@ -334,11 +340,11 @@ describe("packaging and docs invariants (task 12)", () => {
 
   test("pins consistent across package.json / PINNED_VERSIONS / RELEASE_NOTES / README", async () => {
     const pkg = await readPkg()
-    const pins = await v2SensitivePins()
-    // `fullPinTable: true` docs must mirror EVERY v2-sensitive pin row; README
+    const pins = await hostSensitivePins()
+    // `fullPinTable: true` docs must mirror every host-sensitive pin row; README
     // deliberately carries only the plugin-API pin + package version + tested SHA
-    // (it defers the full table to PINNED_VERSIONS.md), so it is locked on exactly
-    // those strings — enough to fail the suite on a stale README pin.
+    // (it defers the full table to PINNED_VERSIONS.md), so it is checked against
+    // exactly those strings — enough to fail the suite on a stale README pin.
     const docs: Array<{ label: string; content: string; fullPinTable: boolean }> = [
       {
         label: "PINNED_VERSIONS.md",
@@ -346,8 +352,8 @@ describe("packaging and docs invariants (task 12)", () => {
         fullPinTable: true,
       },
       {
-        label: "RELEASE_NOTES_0.5.0-beta.3.md",
-        content: await readFile(join(ROOT, "RELEASE_NOTES_0.5.0-beta.3.md"), "utf8"),
+        label: RELEASE_NOTES_FILE,
+        content: await readFile(join(ROOT, RELEASE_NOTES_FILE), "utf8"),
         fullPinTable: true,
       },
       { label: "README.md", content: await readFile(join(ROOT, "README.md"), "utf8"), fullPinTable: false },
@@ -362,34 +368,34 @@ describe("packaging and docs invariants (task 12)", () => {
 
     for (const { label, content, fullPinTable } of docs) {
       if (fullPinTable) {
-        // each doc's pin-table row must carry EXACTLY the package.json specifier;
+        // each doc's pin-table row must carry exactly the package.json specifier;
         // any drift in either direction breaks the row match
         for (const [name, version] of pins) {
           const row = `| \`${name}\` | \`${version}\` |`
           expect(content, `${label} row for ${name}@${version}`).toContain(row)
         }
       } else {
-        // scoped lock: plugin-API pin row (trailing cell text is free-form) + tested SHA
+        // scoped check: plugin-API pin row (trailing cell text is free-form) + tested SHA
         const pluginPin = pkg.devDependencies?.["@opencode-ai/plugin"] ?? ""
         expect(content, `${label} row for @opencode-ai/plugin@${pluginPin}`).toContain(
           `| \`@opencode-ai/plugin\` | \`${pluginPin}\``,
         )
         expect(content, `${label} tested SHA`).toContain(TESTED_OPENCODE_SHA)
       }
-      // prerelease version string agrees
-      expect(content, `${label} prerelease version`).toContain("0.5.0-beta.3")
+      // package version string agrees
+      expect(content, `${label} package version`).toContain(PKG_VERSION)
     }
-    expect(pkg.version).toBe("0.5.0-beta.3")
+    expect(pkg.version).toBe(PKG_VERSION)
   })
 
   test("README documents plural plugins for server and cli.json for TUI", async () => {
     const readme = await readFile(join(ROOT, "README.md"), "utf8")
 
-    // plural v2 config key sample present (server opencode.json + TUI cli.json)
+    // plural config key sample present (server opencode.json + TUI cli.json)
     expect(readme).toContain('"plugins": [')
     expect(readme).toContain("cli.json")
 
-    // no config snippet targets tui.json and no v1 singular `plugin` array survives
+    // no config snippet targets tui.json and no legacy singular `plugin` array survives
     const codeBlocks = readme.match(/```[\s\S]*?```/g) ?? []
     expect(codeBlocks.length).toBeGreaterThan(0)
     for (const block of codeBlocks) {
@@ -398,24 +404,24 @@ describe("packaging and docs invariants (task 12)", () => {
     }
   })
 
-  test("PINNED_VERSIONS and RELEASE_NOTES carry the Phase 9 tested SHA and no floating tags", async () => {
-    for (const file of ["PINNED_VERSIONS.md", "RELEASE_NOTES_0.5.0-beta.3.md"]) {
+  test("PINNED_VERSIONS and RELEASE_NOTES carry the tested opencode SHA and no floating tags", async () => {
+    for (const file of ["PINNED_VERSIONS.md", RELEASE_NOTES_FILE]) {
       const content = await readFile(join(ROOT, file), "utf8")
 
       expect(content, `${file} tested SHA`).toContain(TESTED_OPENCODE_SHA)
 
       // no `pkg@latest` / `pkg@next` / `pkg@beta` / `pkg@dev` install specifier anywhere
-      // (`0.0.0-dev-18686` is an exact version STRING, not the `dev` dist-tag)
+      // (`0.0.0-dev-18686` is an exact version string, not the `dev` dist-tag)
       expect(content, `${file} floating dist-tag`).not.toMatch(/@(latest|next|beta|dev)(?![\w.-])/)
-      // and no floating range specifiers for the v2-sensitive deps
-      for (const [name] of await v2SensitivePins()) {
+      // and no floating range specifiers for the host-sensitive deps
+      for (const [name] of await hostSensitivePins()) {
         expect(content, `${file} floating range for ${name}`).not.toMatch(new RegExp(`\`${name}\`\\s*\\|\\s*\`[~^*]`))
       }
     }
   })
 })
 
-describe("packed tarball entry resolution (task 13)", () => {
+describe("packed tarball entry resolution", () => {
   let workDir: string
   let consumerDir: string
   let installedPluginDir: string
@@ -458,7 +464,7 @@ describe("packed tarball entry resolution (task 13)", () => {
     if (workDir) await rm(workDir, { recursive: true, force: true })
   })
 
-  test("packed ./server resolves and exposes v2 shape", async () => {
+  test("packed ./server resolves and exposes the plugin shape", async () => {
     const out = await nodeProbe(
       consumerDir,
       `const mod = await import("opencode-kiro/server");
@@ -471,7 +477,7 @@ describe("packed tarball entry resolution (task 13)", () => {
        }));`,
     )
 
-    // `tui: true` is the dev-17968 auto-load flag (boolean, not a v1 module kind)
+    // `tui: true` is the auto-load flag (boolean, not a module-kind object)
     expect(JSON.parse(out)).toEqual({
       id: "kiro",
       setup: "function",
@@ -506,9 +512,9 @@ describe("packed tarball entry resolution (task 13)", () => {
   }, 30_000)
 
   test("root fallback understood", async () => {
-    // HOST_E2E_REPORT.md O1: the exports map intentionally lacks a root (".")
-    // entry, so the host's root fallback yields no entrypoint and `./server`
-    // (tried first) wins. Lock both halves of that contract.
+    // the exports map intentionally lacks a root (".") entry, so the host's
+    // root fallback yields no entrypoint and `./server` (tried first) wins.
+    // Both halves of that contract are asserted here.
     const pkg = await readPkg()
     expect(Object.keys(pkg.exports)).not.toContain(".")
 
@@ -524,15 +530,13 @@ describe("packed tarball entry resolution (task 13)", () => {
     expect(JSON.parse(out)).toEqual({ resolved: false, code: "ERR_PACKAGE_PATH_NOT_EXPORTED" })
   }, 30_000)
 
-  test("packed TUI runtime dependencies resolve and setup activates (B2 regression lock)", async () => {
-    // Regression lock for HOST_E2E_REPORT.md blocker B2: the host installs the
-    // tarball into an isolated tree containing only its declared dependencies,
-    // so the TUI entry's lazily-imported view stack must be resolvable from
-    // there and setup() must activate. Fixed in gate iteration 1 by declaring
-    // @opentui/solid + solid-js as real `dependencies` (they stay bundler
-    // externals, so dist never inlines them; @opentui/core arrives transitively
-    // via @opentui/solid, which depends on it exactly). Do not weaken — this is
-    // the automated witness for the e2e finding.
+  test("packed TUI runtime dependencies resolve and setup activates", async () => {
+    // The host installs the tarball into an isolated tree containing only its
+    // declared dependencies, so the TUI entry's lazily-imported view stack must
+    // be resolvable from there and setup() must activate. This requires
+    // @opentui/solid + solid-js to be declared as real `dependencies` (they
+    // stay bundler externals, so dist never inlines them; @opentui/core arrives
+    // transitively via @opentui/solid, which depends on it exactly).
     const tuiPath = join(installedPluginDir, "dist", "tui.js")
     const out = await nodeProbe(
       consumerDir,
@@ -564,17 +568,4 @@ describe("packed tarball entry resolution (task 13)", () => {
       error: null,
     })
   }, 30_000)
-
-  // Note (task 14 Step 3, resolved in gate iteration 1): the only e2e-derived
-  // lock that belongs in this packaging suite is the B2 dependency-resolvability
-  // lock above — it needs a packed tarball installed into an isolated tree.
-  // B3 (effort settings key) is deliberately NOT locked here: it is a pure
-  // in-process catalog/hook contract, so its locks live in the server suite
-  // where the mocked SDK can witness the whole path —
-  // `test/server.test.ts` "discovery: catalog transform ..." (emitted
-  // `settings.effort`, `reasoningEffort` absent) plus "the SDK effort key flows
-  // from the effort variant into createKiroAcp options" (variant overlay ->
-  // `event.options` -> `createKiroAcp({ effort })`). `src/server/discovery.ts`
-  // additionally pins the key at compile time via
-  // `satisfies Pick<KiroACPProviderSettings, "effort">`.
 })

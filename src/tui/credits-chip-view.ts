@@ -1,16 +1,15 @@
-// compact credits chip for the v2 `prompt.footer.status` slot: rendered inline in the prompt
-// footer row (v1 placement restored). The host mounts the slot inside a
-// `flexDirection="row" gap={2}` footer box and renders append claims as fragment siblings,
-// so the chip sits beside the host status content (spinner / interrupt / location label)
-// with the row gap as its separator — no leading separator text is needed.
-// `append` claims are additive, so the chip composes with host content and never replaces
-// it (immutable requirement 17).
+// compact credits chip for the `prompt.footer.status` slot: rendered inline in the prompt
+// footer row. The host mounts the slot inside a `flexDirection="row" gap={2}` footer box and
+// renders append claims as fragment siblings, so the chip sits beside the host status content
+// (spinner / interrupt / location label) with the row gap as its separator — no leading
+// separator text is needed. `append` claims are additive, so the chip composes with host
+// content and never replaces it.
 // Presentation only: tui.ts assembles the merged durable+transient rollup and passes it in
 // as an accessor plus optional feature-detected theme tokens; this module never touches the
 // TUI context. With no tokens, default/inherited styling applies.
 // built with @opentui/solid's universal-renderer calls (compiled-Solid lowering) so dist
 // needs no solid transform; @opentui/solid and solid-js stay external (and, inside the TUI
-// host, resolve to the HOST's module instances via its runtime-plugin loader shim).
+// host, resolve to the host's module instances via its runtime-plugin loader shim).
 import { createElement, insert, setProp, type DomNode } from "@opentui/solid"
 import { createMemo } from "solid-js"
 import type { CreditThemeTokens } from "./credits-box-view.js"
