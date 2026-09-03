@@ -1492,6 +1492,14 @@ describe("plugin options", () => {
     const second = await setupAndTransform(h2)
     expect(second.record.provider.settings).toMatchObject({ agent: "opencode", mcpTimeout: 45 })
     await second.cleanup()
+
+    // non-positive timeouts are finite numbers but not a usable duration
+    for (const mcpTimeout of [0, -1]) {
+      const h3 = makeMockContext({ options: { mcpTimeout } })
+      const third = await setupAndTransform(h3)
+      expect(third.record.provider.settings).toMatchObject({ mcpTimeout: 45 })
+      await third.cleanup()
+    }
   })
 
   test("discover:false gates setup kick-off only", async () => {

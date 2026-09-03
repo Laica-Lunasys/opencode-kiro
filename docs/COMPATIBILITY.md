@@ -42,15 +42,18 @@ silently resolve to a layout the plugin was not built against.
    { "plugins": ["opencode-kiro@0.5.0-beta.4"] }
    ```
 
-2. Check the OpenCode build you run against the tested commit above (`opencode
-   --version` or the `git rev-parse HEAD` of your checkout). A build past the tested
-   commit may have changed the plugin surface underneath this release.
+2. Check the OpenCode build you run against the tested commit above. `opencode
+   --version` prints a build version, not a commit, so run `git rev-parse HEAD` in
+   the checkout the opencode binary was built from. A build past the tested commit
+   may have changed the plugin surface underneath this release.
 3. Confirm the installed pins match this table:
 
    ```bash
    cd "${XDG_CACHE_HOME:-$HOME/.cache}/opencode/packages/opencode-kiro@0.5.0-beta.4"
    npm ls kiro-acp-ai-provider @opentui/solid solid-js
    ```
+
+   `npm ls` may report unrelated tree warnings; only the three version numbers matter.
 
 If any value differs, remove the cached package and reinstall with the exact spec.
 See [CHANGELOG.md](../CHANGELOG.md) for what each release changed.

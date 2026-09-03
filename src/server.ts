@@ -17,14 +17,16 @@ import { buildCleanup, createServerState } from "./server/lifecycle.js"
 // integration.list() derivation is strictly better (discovery.ts).
 //
 // Exactly three options: `agent` (default "opencode"), `mcpTimeout` (default
-// 45), `discover` (default true). Type-invalid values fall back to the
-// defaults and unknown keys are ignored silently (fail open). `trustAllTools`
-// is not exposed.
+// 45, must be a positive finite number of minutes), `discover` (default true).
+// Type-invalid values fall back to the defaults and unknown keys are ignored
+// silently (fail open). `trustAllTools` is not exposed.
 function resolveOptions(raw: Record<string, unknown>): KiroPluginOptions {
   return {
     agent: typeof raw.agent === "string" && raw.agent !== "" ? raw.agent : "opencode",
     mcpTimeout:
-      typeof raw.mcpTimeout === "number" && Number.isFinite(raw.mcpTimeout) ? raw.mcpTimeout : 45,
+      typeof raw.mcpTimeout === "number" && Number.isFinite(raw.mcpTimeout) && raw.mcpTimeout > 0
+        ? raw.mcpTimeout
+        : 45,
     discover: typeof raw.discover === "boolean" ? raw.discover : true,
   }
 }

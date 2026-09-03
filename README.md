@@ -54,7 +54,9 @@ tested SHA above is the compatibility target. Other v2 snapshots may or may not 
 ## Install and configure
 
 **One config entry — that's the whole setup.** Add the package to the **`plugins`**
-array (plural) of your OpenCode config (`opencode.json`, project or global):
+array (plural) of your OpenCode config. That is any `opencode.json` or `opencode.jsonc`
+(or `.opencode/opencode.json`) found walking up from the project directory, or the
+global `~/.config/opencode/opencode.json`:
 
 ```json
 {
@@ -112,12 +114,16 @@ All options are optional; omit the `options` object entirely to get the defaults
 }
 ```
 
-A value of the wrong type falls back to its default; unknown keys are ignored.
+A value of the wrong type falls back to its default; unknown keys are ignored. The
+contract per option: `mcpTimeout` must be a positive, finite number of minutes and is
+forwarded to kiro-cli as given (zero, negative, or non-finite values fall back to `45`);
+an empty `agent` string falls back to `"opencode"`.
 
 > ⚠️ **Options work on the npm channel only.** The host passes `options` to plugins it
-> installed from npm (the `"package": "opencode-kiro@<version>"` form above). Bundled
-> or built-in plugin loads receive an empty options object, so **the defaults always
-> apply there** regardless of what you write in `options`.
+> installed from npm (the `"package": "opencode-kiro@<version>"` form above). Local
+> `name@file:` tarball installs count as the npm channel, so options work there too.
+> Bundled or built-in plugin loads receive an empty options object, so **the defaults
+> always apply there** regardless of what you write in `options`.
 
 There is **no `cwd` option**. The working directory handed to kiro-cli is derived
 automatically from the OpenCode location the plugin is set up for, once per location;
@@ -209,19 +215,11 @@ opencode models
 opencode run -m kiro/<exact-model-id> "hello"
 ```
 
-Effort-capable models expose their variants through OpenCode's model-variant selection.
-The chosen level reaches the SDK per request: OpenCode overlays the selected variant's
-`settings` onto the model's `settings` and hands them to the plugin's `aisdk` hooks as
-`event.options`; the plugin's `language` hook reads `event.options.effort` and passes
-it to the shared provider as a per-model override (`languageModel(id, { effort })`).
-One provider instance (one kiro-cli process) therefore serves every effort level;
-switching effort does not start additional kiro-cli processes. That is why the plugin
-emits the SDK's own `effort` key (not `reasoningEffort`) — and why the SDK settings
-path, not per-call provider options, is the working carrier: OpenCode builds per-call
-`providerOptions` only for the first-party `@ai-sdk/*` provider families, so
-`providerOptions.kiro.*` is never populated for an `aisdk:` package provider like this
-one. Kiro cannot disable thinking, so even the lowest level still produces a reasoning
-trail.
+Effort-capable models expose their variants through OpenCode's model-variant selection:
+pick the variant to choose a reasoning-effort level. The selected level is applied per
+request, and one provider instance (one kiro-cli process) serves every effort level, so
+switching effort does not start additional kiro-cli processes. Kiro cannot disable
+thinking, so even the lowest level still produces a reasoning trail.
 
 ## Credits in the TUI
 
@@ -290,6 +288,15 @@ double-counted. See [CHANGELOG.md](./CHANGELOG.md) for details.
   effort variants. The `language` hook applies the selected effort per request. The
   settings relay each model's context window into the SDK's `contextWindows` map keyed
   by model ID.
+- **Effort carrier (why SDK settings, not `providerOptions`)**: OpenCode overlays the
+  selected variant's `settings` onto the model's `settings` and hands them to the
+  plugin's `aisdk` hooks as `event.options`; the `language` hook reads
+  `event.options.effort` and passes it to the shared provider as a per-model override
+  (`languageModel(id, { effort })`). The plugin emits the SDK's own `effort` key (not
+  `reasoningEffort`), and the settings path is the working carrier because OpenCode
+  builds per-call `providerOptions` only for the first-party `@ai-sdk/*` provider
+  families - `providerOptions.kiro.*` is never populated for an `aisdk:` package
+  provider like this one.
 - **Session affinity & reset (in-SDK)**: the SDK keys kiro-cli sessions off OpenCode's
   session affinity, isolates tool-less utility calls on an ephemeral session, detects
   prompt-history divergence, and starts a fresh kiro session when needed.

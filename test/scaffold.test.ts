@@ -408,10 +408,10 @@ describe("packaging and docs invariants", () => {
     expect(pkg.version).toBe(PKG_VERSION)
   })
 
-  test("README documents plural plugins for server and cli.json for TUI", async () => {
+  test("README documents plural plugins and that cli.json is not used", async () => {
     const readme = await readFile(join(ROOT, "README.md"), "utf8")
 
-    // plural config key sample present (server opencode.json + TUI cli.json)
+    // plural config key sample present, and cli.json is mentioned (as not used)
     expect(readme).toContain('"plugins": [')
     expect(readme).toContain("cli.json")
 

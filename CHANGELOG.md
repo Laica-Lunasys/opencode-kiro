@@ -93,12 +93,10 @@ tested build. Use the exact `opencode-kiro@0.5.0-beta.4` spec.
   login that timed out, was cancelled, or was superseded before the host attached
   its result handler could previously emit an unhandled-rejection warning in the
   host process. The rejection is now always observed.
-- **Provider-instance reuse works in production.** The plugin caches its owned
-  provider per settings so the host's repeated provider constructions share one
-  instance, but the cache key used to include everything the host passed along,
-  including a host-injected `fetch` function that made the key unusable and forced a
-  fresh instance every time. The key now derives only from the plugin's own provider
-  settings, so the cache actually reuses instances.
+- **Provider reuse now works in production.** Kiro requests reuse one provider
+  instance (one kiro-cli process) per configuration instead of constructing a fresh
+  one every time. The cache key previously included a host-injected `fetch` function,
+  which made it unusable; it now derives only from the plugin's own provider settings.
 
 ### Upgrading from beta.3
 
