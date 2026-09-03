@@ -57,11 +57,12 @@ tested build. Use the exact `opencode-kiro@0.5.0-beta.4` spec.
   }
   ```
 
-  `agent` (default `"opencode"`) is the kiro-cli agent name; `mcpTimeout` (default
-  `45`) is the MCP tool-call timeout in minutes; `discover: false` skips the
-  setup-time model discovery kick-off (discovery on login/credential events still
-  runs). Values of the wrong type fall back to the defaults and unknown keys are
-  ignored. **Options are honored for npm-installed plugins only**: bundled/built-in
+  `agent` (default `"opencode"`) is the kiro-cli agent name; `mcpTimeout` is the
+  MCP tool-call timeout in minutes and must be a positive number of minutes; zero,
+  negative, or non-numeric values fall back to the default (`45`); `discover: false`
+  skips the setup-time model discovery kick-off (discovery on login/credential
+  events still runs). Values of the wrong type fall back to the defaults and
+  unknown keys are ignored. **Options are honored for npm-installed plugins only**: bundled/built-in
   plugin loads receive no options from the host, so the defaults always apply there.
   There is deliberately no `cwd` option; the working directory is derived per
   OpenCode location automatically.

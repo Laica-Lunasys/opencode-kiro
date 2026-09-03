@@ -115,9 +115,9 @@ All options are optional; omit the `options` object entirely to get the defaults
 ```
 
 A value of the wrong type falls back to its default; unknown keys are ignored. The
-contract per option: `mcpTimeout` must be a positive, finite number of minutes and is
-forwarded to kiro-cli as given (zero, negative, or non-finite values fall back to `45`);
-an empty `agent` string falls back to `"opencode"`.
+contract per option: `mcpTimeout` must be a positive number of minutes; zero, negative,
+or non-numeric values fall back to the default (`45`); an empty `agent` string falls
+back to `"opencode"`.
 
 > ⚠️ **Options work on the npm channel only.** The host passes `options` to plugins it
 > installed from npm (the `"package": "opencode-kiro@<version>"` form above). Local
