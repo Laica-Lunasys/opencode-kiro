@@ -11,6 +11,112 @@ stability promise: it may break when OpenCode's v2 branch moves. OpenCode v1 use
 stay on `opencode-kiro@0.4.0` (the `main` branch / npm `latest` line). No OpenCode v2
 release date is known or claimed here. Current pins: [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md).
 
+## [0.5.0-beta.5] - 2026-09-04
+
+Supersedes 0.5.0-beta.4 at the same tested OpenCode commit. This release makes model
+discovery resilient to a slow or failing kiro-cli, and makes a stalled turn visible
+instead of leaving a spinner with nothing behind it. No re-login is needed.
+
+### Compatibility
+
+| Item | Value |
+|---|---|
+| Tested OpenCode commit (`upstream/v2` head, 2026-08-29) | `8ba434b5973856b2f32b8cd3543e154b25c413e6` |
+| Package version | `0.5.0-beta.5` |
+
+| Package | Pinned version | Where |
+|---|---|---|
+| `@opencode-ai/plugin` | `0.0.0-dev-18686` | devDependencies + peerDependencies (exact; the dev channel is the live v2 channel, pinned by exact version string, never by dist-tag; unchanged from beta.4) |
+| `@opentui/solid` | `0.5.9` | dependencies (exact; sole published version satisfying the `>=0.5.9` peer floor; bundler-external, never bundled; unchanged) |
+| `solid-js` | `1.9.12` | dependencies (exact; `@opentui/solid@0.5.9` peers this exactly; bundler-external, never bundled; unchanged) |
+| `kiro-acp-ai-provider` | `3.2.0` | dependencies (exact; moved from `3.1.0`) |
+
+Requires kiro-acp-ai-provider 3.2.0.
+
+Pin your install spec too: the host background-auto-refreshes unpinned npm plugin
+packages, so a bare `"opencode-kiro"` `plugins` entry can silently move you off the
+tested build. Use the exact `opencode-kiro@0.5.0-beta.5` spec.
+
+### Added
+
+- **Stall notice for turns with no model output.** When the Kiro backend is
+  overloaded, kiro-cli retries on its own and the turn shows nothing for a while. By
+  default, after 10 seconds without output a short reasoning block now appears in the
+  transcript (along the lines of "Kiro: no output for 10s - the model may be overloaded
+  and kiro-cli is retrying."), refreshes every further 10 seconds of silence, and
+  closes with "output resumed after Ns" when output arrives, or "turn ended after Ns
+  without further output" if the turn ends first. The block is separate from
+  the model's own reasoning and text; the answer is unaffected. Like any reasoning
+  block, the TUI shows it **collapsed by default (click to expand)**, and only when
+  thinking is shown (`session.thinking: "show"` in `cli.json`).
+- **Stall summary in the credits surfaces.** After a stalled turn ends, the sidebar
+  credits box and the footer credits chip add one line, `last turn stalled Ns (Reason)`,
+  for as long as the last completed turn is the one that stalled. The reason (for
+  example `ModelOverloaded`) is taken, best-effort, from the last error kiro-cli wrote
+  to its own log during the turn; without one the line shows the duration alone.
+- **Plugin option `stall`.** `stall: { afterMs, live }` in the object form of the
+  `plugins` entry: `afterMs` (default `10000`) is the silence threshold in
+  milliseconds and `0` disables the feature entirely; `live` is `"reasoning"`
+  (default; live transcript block) or `"off"` (summary line only). Each member is
+  validated on its own; invalid members are dropped and the defaults apply. Like the
+  other options it is honored for npm-installed plugins only.
+- **Discovery diagnostics.** A model-discovery probe that fails or times out is now
+  reported on the server's stderr with an `[opencode-kiro]` prefix, including the
+  attempt count and the next step (retry delay or giving up). The lines are visible in
+  `opencode serve` output or, from the TUI, with `OPENCODE_PRINT_LOGS=1`. Previously a
+  failed discovery was silent.
+
+### Changed
+
+- **Discovery probes time out and retry.** A `listModels()` probe that gets no answer
+  from kiro-cli within 60 seconds is treated as failed. A failed or timed-out probe is
+  retried after 5, 20, and 60 seconds while Kiro stays connected; the chain stops on
+  logout, on a newer discovery, on cleanup, or after the last retry, until the next
+  login or credential change starts a fresh one. Discovery remains fail-open: the
+  catalog is left unchanged while no result is available.
+- **One discovery probe per login.** The host emits several credential events for a
+  single login; they now coalesce onto one in-flight probe per project location
+  instead of running a probe per event.
+
+### Fixed
+
+- **A failed startup discovery no longer leaves the provider without effort variants
+  until restart.** When the initial probe failed or hung, beta.4 kept the catalog
+  without Kiro's runtime model list and reasoning-effort variants until opencode was
+  restarted or a credential changed; the probe is now retried automatically.
+- **Abandoned probes cannot overwrite the catalog.** A probe that is still running
+  after its deadline, a logout, or a newer discovery is discarded when it finally
+  completes; only the result of the current probe is applied.
+
+### Upgrading from beta.4
+
+Change the `plugins` entry `opencode-kiro@0.5.0-beta.4` to `opencode-kiro@0.5.0-beta.5`
+and restart opencode. No new config keys are required (the `stall` option is
+optional), no `cli.json` or `tui.json` entry, no re-login (credentials are host-owned
+and carry over). The tested OpenCode commit did not move.
+
+### Known limitations
+
+New in this release:
+
+1. **A stalled turn that ends without any text or reasoning carries no summary.** The
+   stall status rides the turn's final text or reasoning part (the live notice counts
+   as one while it is open). A turn whose output after the stall consists of tool
+   calls only shows the transcript block but no `last turn stalled` line afterwards.
+
+Unchanged from beta.4:
+
+2. **Model-discovery probes carry the SDK's default client name.** Cosmetic in
+   kiro-cli logs; no behavior impact.
+3. **Live text credits still use the transient overlay.** Durable state is
+   authoritative on every reconcile; nothing is double-counted.
+4. **Local `file:` installs render a per-slot TUI error.** Registry installs are
+   colon-free.
+5. **No dollar cost anywhere.** Credits render in the TUI surfaces only. Expected, not
+   a defect.
+6. **Prerelease pins are rigid.** All v2-sensitive pins are exact and the
+   compatibility target is the single tested commit above.
+
 ## [0.5.0-beta.4] - 2026-09-02
 
 Supersedes 0.5.0-beta.3 at the same tested OpenCode commit. This release fixes a
@@ -389,6 +495,7 @@ v1 plugin contract throughout: singular `plugin` arrays in `opencode.json` and
 `tui.json`, the `opencode plugin opencode-kiro` installer, and `part.metadata.kiro`
 credits. Full documentation: the README at the `v0.4.0` tag.
 
+[0.5.0-beta.5]: https://www.npmjs.com/package/opencode-kiro/v/0.5.0-beta.5
 [0.5.0-beta.4]: https://www.npmjs.com/package/opencode-kiro/v/0.5.0-beta.4
 [0.5.0-beta.3]: https://www.npmjs.com/package/opencode-kiro/v/0.5.0-beta.3
 [0.5.0-beta.2]: https://www.npmjs.com/package/opencode-kiro/v/0.5.0-beta.2

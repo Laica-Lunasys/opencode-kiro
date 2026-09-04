@@ -1,10 +1,12 @@
 // TUI plugin: appends the Kiro credits surfaces and replaces nothing. Two additive slot
 // claims: `sidebar.content` (credits box: "Kiro" header + formatted total) and
 // `prompt.footer.status` (compact chip with the same total + unit, after the host's status
-// content). Credits come from durable messages via `context.data.session.message.list` plus a
-// transient store fed by `session.text.ended` events: the host's live reducer drops
-// `event.data.state` for text-only responses, so the transient store is a live overlay and
-// the durable value wins on reconcile. `context.data.session.message.sync` is never forced.
+// content). Both add a one-line stall summary when the last completed turn stalled. Credits
+// and status come from durable messages via `context.data.session.message.list` plus a
+// transient store fed by `session.text.ended` and `session.reasoning.ended` events: the host's
+// live reducer drops `event.data.state` for text-only responses, so the transient store is a
+// live overlay and the durable value wins on reconcile. `context.data.session.message.sync` is
+// never forced.
 //
 // Lazy-import rule: @opentui/core is Bun-native and only exists inside the TUI host, so the
 // view modules and solid-js are imported inside setup — never at module top level — keeping
@@ -24,6 +26,7 @@ import {
   mergedMessageCredits,
   reconcile,
   recordTextEnded,
+  type TextEndedEvent,
   type TransientCreditStore,
 } from "./tui/transient-credits.js"
 
@@ -93,20 +96,24 @@ const plugin: Plugin.Definition = {
     ])
 
     // Transient writes go into a plain Map (not reactive); this signal makes render-path
-    // reads re-run after a text-ended record, independent of host reducer ordering.
+    // reads re-run after an ended-part record, independent of host reducer ordering.
     const [transientVersion, setTransientVersion] = createSignal(0)
 
-    const unsubscribeTextEnded = context.data.on("session.text.ended", (event) => {
-      // never-throw UI side effects: invalid payloads are swallowed by recordTextEnded's
-      // guards, and anything unexpected is ignored here.
+    // Credits and the stall status ride the ended event of whichever part closes the turn:
+    // normally the last text part, but when a stall notice is still open at turn end the SDK
+    // closes that reasoning part and attaches the metadata there instead. Both event kinds share
+    // one data shape and one never-throw recording path: invalid payloads are swallowed by
+    // recordTextEnded's guards, and anything unexpected is ignored here.
+    const recordEnded = (event: TextEndedEvent): void => {
       try {
         recordTextEnded(store, event)
         setTransientVersion((version) => version + 1)
       } catch {
         // ignore — a bad event must never break host event dispatch
       }
-    })
-    disposers.push(unsubscribeTextEnded)
+    }
+    disposers.push(context.data.on("session.text.ended", recordEnded))
+    disposers.push(context.data.on("session.reasoning.ended", recordEnded))
 
     // Render-path data assembly (views stay presentation-only): every fresh durable read
     // reconciles the transient store first, so durable state stays authoritative and

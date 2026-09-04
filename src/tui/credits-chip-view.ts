@@ -13,12 +13,14 @@
 import { createElement, insert, setProp, type DomNode } from "@opentui/solid"
 import { createMemo } from "solid-js"
 import type { CreditThemeTokens } from "./credits-box-view.js"
-import { formatCredits, type SessionCredits } from "./credits.js"
+import { creditsChipText, type SessionCredits } from "./credits.js"
 
 /**
  * Build the prompt-footer credits chip for one session. `credits` is the merged
  * durable+transient session rollup assembled in tui.ts; `tokens` are the optional
  * feature-detected theme colors (`subdued` matches the host's own footer/status text).
+ * When the last completed turn stalled, the chip text gains a ` · last turn stalled Ns (Reason)`
+ * suffix on the same line; the suffix disappears once a later turn completes cleanly.
  */
 export function createCreditsChipView(credits: () => SessionCredits, tokens?: CreditThemeTokens): DomNode {
   const current = createMemo(credits)
@@ -33,6 +35,6 @@ export function createCreditsChipView(credits: () => SessionCredits, tokens?: Cr
   setProp(chip, "wrapMode", "none")
   setProp(chip, "flexShrink", 0)
   if (tokens?.subdued !== undefined) setProp(chip, "fg", tokens.subdued)
-  insert(chip, () => (current().present ? formatCredits(current().total, current().unit) : ""))
+  insert(chip, () => creditsChipText(current()))
   return chip
 }

@@ -44,7 +44,7 @@ npm run build && npm pack
 ```
 
 ```json
-{ "plugins": ["opencode-kiro@file:/absolute/path/to/opencode-kiro-0.5.0-beta.4.tgz"] }
+{ "plugins": ["opencode-kiro@file:/absolute/path/to/opencode-kiro-0.5.0-beta.5.tgz"] }
 ```
 
 The `name@file:` form is required at the tested commit; a bare path or bare `file:` spec is rejected. opencode resolves both entrypoints from the package `exports` (`./server` for the server half, `./tui` for the auto-loaded TUI half). If the catalog opencode loads has no `kiro` entry, the plugin self-registers the provider and the runtime-discovered models after `opencode auth login`, so no custom catalog is required for basic testing:
@@ -92,7 +92,7 @@ export XDG_CACHE_HOME="$SANDBOX/cache"
 mkdir -p "$XDG_CONFIG_HOME/opencode"
 
 # Set this placeholder to the absolute path of the tarball produced by `npm pack`.
-export OPENCODE_KIRO_TGZ="/absolute/path/to/opencode-kiro-0.5.0-beta.4.tgz"
+export OPENCODE_KIRO_TGZ="/absolute/path/to/opencode-kiro-0.5.0-beta.5.tgz"
 
 # One plugins entry in opencode.json loads the server half; the TUI half
 # (sidebar credits box, footer chip) auto-loads from it via tui: true.

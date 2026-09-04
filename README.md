@@ -1,6 +1,6 @@
 # opencode-kiro
 
-> ⚠️ **Experimental prerelease** — `0.5.0-beta.4` targets the **unreleased OpenCode v2**
+> ⚠️ **Experimental prerelease** — `0.5.0-beta.5` targets the **unreleased OpenCode v2**
 > plugin contract at a pinned snapshot. It does **not** work with OpenCode v1.
 > v1 users: stay on **`opencode-kiro@0.4.0`** (the `main` branch / npm `latest` line,
 > which remains the supported stable release). See [CHANGELOG.md](./CHANGELOG.md) and
@@ -18,7 +18,7 @@ The plugin supplies:
   minimal self-registration fallback when the catalog lacks a `kiro` entry
 - **Provider ownership**: an AISDK hook constructs the provider from
   [`kiro-acp-ai-provider`](https://www.npmjs.com/package/kiro-acp-ai-provider) with the
-  right options (`cwd`, `agent`, `trustAllTools`, `mcpTimeout`, `contextWindows`)
+  right options (`cwd`, `agent`, `trustAllTools`, `mcpTimeout`, `stall`, `contextWindows`)
 - **TUI credits display**: a live Kiro credits box in the sidebar and a compact
   credits chip in the prompt footer row beside the host cost/context display, both
   styled with the host's active theme tokens — auto-loaded from the same single
@@ -37,7 +37,7 @@ This prerelease is built and tested against **one pinned OpenCode v2 snapshot**:
 |---|---|
 | Tested OpenCode commit (`upstream/v2` head, 2026-08-29) | `8ba434b5973856b2f32b8cd3543e154b25c413e6` |
 | `@opencode-ai/plugin` | `0.0.0-dev-18686` (exact) |
-| Package version | `0.5.0-beta.4` |
+| Package version | `0.5.0-beta.5` |
 
 Full pin table and verification steps: [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md).
 There is no `engines.opencode` constraint — the v2 host has no stable semver yet; the
@@ -60,14 +60,14 @@ global `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugins": ["opencode-kiro@0.5.0-beta.4"]
+  "plugins": ["opencode-kiro@0.5.0-beta.5"]
 }
 ```
 
 > ⚠️ **Always pin the exact version, as above.** The host background-auto-refreshes
 > unpinned npm plugin packages to whatever the registry serves, so a bare `"opencode-kiro"`
 > spec can silently move you off the tested build. Use the exact
-> `opencode-kiro@0.5.0-beta.4` spec.
+> `opencode-kiro@0.5.0-beta.5` spec.
 
 The object form pins the same version and takes the plugin options described in
 [Plugin options](#plugin-options):
@@ -76,7 +76,7 @@ The object form pins the same version and takes the plugin options described in
 {
   "plugins": [
     {
-      "package": "opencode-kiro@0.5.0-beta.4",
+      "package": "opencode-kiro@0.5.0-beta.5",
       "options": {}
     }
   ]
@@ -98,16 +98,18 @@ All options are optional; omit the `options` object entirely to get the defaults
 | `agent` | string | `"opencode"` | kiro-cli agent name the provider runs under |
 | `mcpTimeout` | number | `45` | MCP tool-call timeout, in **minutes** |
 | `discover` | boolean | `true` | Set `false` to skip the setup-time model discovery kick-off when Kiro is already connected. Discovery triggered by login/credential events still runs. |
+| `stall` | object | `{ "afterMs": 10000, "live": "reasoning" }` | Stall notice for turns with no model output. `afterMs` is the silence threshold in milliseconds (`0` disables the notice entirely); `live` is `"reasoning"` (live notice in the transcript, visible only when thinking is shown) or `"off"` (summary line only). See [Slow responses](#slow-responses). |
 
 ```json
 {
   "plugins": [
     {
-      "package": "opencode-kiro@0.5.0-beta.4",
+      "package": "opencode-kiro@0.5.0-beta.5",
       "options": {
         "agent": "opencode",
         "mcpTimeout": 45,
-        "discover": true
+        "discover": true,
+        "stall": { "afterMs": 10000, "live": "reasoning" }
       }
     }
   ]
@@ -117,7 +119,10 @@ All options are optional; omit the `options` object entirely to get the defaults
 A value of the wrong type falls back to its default; unknown keys are ignored. The
 contract per option: `mcpTimeout` must be a positive number of minutes; zero, negative,
 or non-numeric values fall back to the default (`45`); an empty `agent` string falls
-back to `"opencode"`.
+back to `"opencode"`. `stall` must be an object; both members are optional and each is
+checked on its own - `afterMs` must be a number of milliseconds of `0` or more, `live`
+must be exactly `"off"` or `"reasoning"`. An invalid member is dropped while the valid
+one is kept, and an object with nothing valid left counts as omitted (defaults apply).
 
 > ⚠️ **Options work on the npm channel only.** The host passes `options` to plugins it
 > installed from npm (the `"package": "opencode-kiro@<version>"` form above). Local
@@ -129,6 +134,49 @@ There is **no `cwd` option**. The working directory handed to kiro-cli is derive
 automatically from the OpenCode location the plugin is set up for, once per location;
 a user-supplied path could only be less accurate.
 
+### Slow responses
+
+When the Kiro backend is overloaded, kiro-cli retries the request on its own and the
+turn produces no output for a while - a spinner with nothing behind it. The `stall`
+option controls how the plugin surfaces that wait:
+
+- **By default** (`afterMs: 10000`, `live: "reasoning"`): after 10 seconds without
+  model output, a short reasoning block appears in the transcript, along the lines of
+  *"Kiro: no output for 10s - the model may be overloaded and kiro-cli is retrying."*
+  It refreshes every further 10 seconds while the silence lasts and closes with
+  *"output resumed after Ns"* once real output arrives, or *"turn ended after Ns
+  without further output"* if the turn ends first. The block is separate from the
+  model's own reasoning and text; the answer is unaffected. Because the live notice is
+  rendered as a reasoning block, the TUI shows it **collapsed by default (click to
+  expand)**, and only when the TUI shows thinking (`session.thinking: "show"` in
+  `cli.json`); with reasoning hidden the notice is hidden too, while the
+  after-the-turn summary line described next still appears.
+- **After the turn**, the credits box in the sidebar and the credits chip in the prompt
+  footer add one line, `last turn stalled Ns (Reason)`, for as long as the last
+  completed turn is the one that stalled. The parenthesized reason (for example
+  `ModelOverloaded`) is taken, best-effort, from the last error kiro-cli wrote to its
+  own log during that turn; when no such line is available the summary shows the
+  duration alone.
+- **`live: "off"`** hides the live transcript block; the after-the-turn summary line
+  still appears.
+- **`afterMs: 0`** disables the feature entirely: no transcript block and no summary.
+  Any other value changes the silence threshold (in milliseconds).
+
+```json
+{
+  "plugins": [
+    {
+      "package": "opencode-kiro@0.5.0-beta.5",
+      "options": { "stall": { "live": "off" } }
+    }
+  ]
+}
+```
+
+The notice is informational only; the plugin never cancels or retries the turn itself.
+Requires `kiro-acp-ai-provider` 3.2.0 (see [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md)
+for the pinned SDK version).
+
 ### Disabling
 
 One `"-kiro"` directive in the same `plugins` array disables **everything**: it removes
@@ -137,7 +185,7 @@ activates either:
 
 ```json
 {
-  "plugins": ["opencode-kiro@0.5.0-beta.4", "-kiro"]
+  "plugins": ["opencode-kiro@0.5.0-beta.5", "-kiro"]
 }
 ```
 
@@ -159,14 +207,14 @@ npm install && npm run build && npm pack
 ```
 
 ```json
-{ "plugins": ["opencode-kiro@file:/absolute/path/to/opencode-kiro-0.5.0-beta.4.tgz"] }
+{ "plugins": ["opencode-kiro@file:/absolute/path/to/opencode-kiro-0.5.0-beta.5.tgz"] }
 ```
 
 A bare path or bare `file:` spec is rejected at the tested SHA — the `name@file:` form
 is required. **Caveat (local `file:` installs only)**: the colon in the resulting
 install dirname defeats the host's OpenTUI loader shim, so the TUI surfaces render a
 contained per-slot error notice instead of the credits views (the rest of the TUI keeps
-working). Registry installs (`opencode-kiro@0.5.0-beta.4`) use colon-free paths and are
+working). Registry installs (`opencode-kiro@0.5.0-beta.5`) use colon-free paths and are
 fully green — this affects local tarball validation only.
 
 The host resolves entrypoints from the package `exports` (`./server` for the server
@@ -207,6 +255,14 @@ variants (per model family, native levels only); an optional runtime baseline ef
 sets the model's base effort. A discovery failure or duplicate runtime ID leaves the
 catalog unchanged (fail-open). If the loaded catalog has no `kiro` provider at all, the
 plugin self-registers a minimal fallback entry so discovered models remain usable.
+
+Discovery is bounded and self-healing: a probe that gets no answer from kiro-cli within
+60 seconds is treated as failed, and a failed probe is retried while Kiro stays
+connected (after 5, 20, and 60 seconds) before giving up until the next login or
+credential change. Each failure is reported on the server's stderr with an
+`[opencode-kiro]` prefix - visible in `opencode serve` output, or from the TUI with
+`OPENCODE_PRINT_LOGS=1` - so a missing model list is never silent. A login triggers one
+probe per project location, however many credential events the host emits for it.
 
 List the resulting models with:
 
@@ -279,8 +335,11 @@ double-counted. See [CHANGELOG.md](./CHANGELOG.md) for details.
   login while one is pending cancels the earlier attempt.
 - **Model discovery (catalog transform)**: after login (and on later login events) the
   plugin runs `listModels()` outside the transform, then applies the validated capture
-  via a catalog transform and reload — exact ID matching, catalog metadata preserved,
-  effort variants projected, fail-open on any discovery error.
+  via a catalog transform and reload - exact ID matching, catalog metadata preserved,
+  effort variants projected, fail-open on any discovery error. Each probe runs under a
+  generation token: a logout, a newer probe, or a retry bumps the generation, and a
+  result that arrives for an older generation is discarded instead of overwriting the
+  catalog.
 - **Provider ownership (AISDK hooks)**: the plugin's `sdk` hook constructs the provider
   from `kiro-acp-ai-provider` with the plugin-supplied settings (identifying itself to
   kiro-cli as `opencode-kiro`) and sets it as the event's SDK, so the Kiro provider is
@@ -304,6 +363,11 @@ double-counted. See [CHANGELOG.md](./CHANGELOG.md) for details.
   metadata; OpenCode persists them key-unwrapped on message part state
   (`part.state.credits`, `part.state.creditsUnit`), and the TUI plugin sums them per
   assistant message (deduped across parts).
+- **Stall status**: when a turn stalled, the SDK attaches `status`
+  (`{ stalledMs, hint? }`) to the same provider metadata; the TUI plugin reads it from
+  `part.state.status` on the same path as credits and renders the one-line summary
+  described in [Slow responses](#slow-responses). The live transcript notice is a
+  reasoning fragment emitted by the SDK itself, so it needs no TUI support.
 
 ## Troubleshooting
 
@@ -313,10 +377,11 @@ double-counted. See [CHANGELOG.md](./CHANGELOG.md) for details.
 | Auth times out after ~120s | Complete the browser login faster, or run `kiro-cli login` yourself, then re-run `opencode auth login` (fast path). |
 | No credits line / credits stay 0 | Credits appear after the first **completed** kiro turn; cancelled turns and turns without usage state contribute nothing. Check the plugin is active (no stray `"-kiro"` directive — note that directive residue can persist on a reused data dir). |
 | Credits surfaces never appear | The TUI half auto-loads from the server `plugins` entry via `tui: true` — no separate TUI config exists. If the box/chip are missing, the server plugin itself is not loading (check your `plugins` entry and restart opencode). For local `name@file:` tarball installs, a contained per-slot error notice instead of the credits views is the known colon-path caveat; use a registry install. |
-| `kiro` provider not showing in `opencode models` | Run `opencode auth login` first: models are discovered after auth. If the loaded catalog lacks a `kiro` entry, the plugin self-registers a minimal fallback during discovery. |
+| `kiro` provider not showing in `opencode models` | Run `opencode auth login` first: models are discovered after auth. If the loaded catalog lacks a `kiro` entry, the plugin self-registers a minimal fallback during discovery. If you are logged in and the list (or the effort variants) is still missing, the discovery probe may have failed or timed out: it is retried automatically for a few minutes, and each attempt is reported on the server's stderr with an `[opencode-kiro]` prefix (`opencode serve`, or `OPENCODE_PRINT_LOGS=1` with the TUI). Logging in again starts a fresh probe. |
+| Spinner with no output for a long time | The Kiro backend is likely overloaded and kiro-cli is retrying the request. With the default `stall` option a collapsed reasoning block saying so appears in the transcript after 10 seconds (only when thinking is shown; see [Slow responses](#slow-responses)), and the credits box/chip show `last turn stalled Ns (Reason)` once the turn ends. If no such block appears and the model list or effort variants are also missing, discovery may be the problem instead: watch the server log (`OPENCODE_PRINT_LOGS=1`, or run under `opencode serve`) for `[opencode-kiro]` lines. kiro-cli's own errors are in its log under your temp directory (`kiro-log/kiro-chat.log`). |
 | Path install rejected (`must export id`) | Use the `name@file:<absolute tarball path>` form after `npm run build && npm pack` in your checkout (both entry modules export ids). |
 | Provider visible but runs fail | The provider can be selectable before any credential exists. Run `opencode auth login` first. |
-| Worked yesterday, broken today | This prerelease targets one pinned OpenCode snapshot (see [Compatibility](#compatibility)). If your OpenCode build moved past the tested SHA, the v2 plugin surface may have changed underneath it. The other cause is an **unpinned** `plugins` entry (a bare `"opencode-kiro"`): the host background-auto-refreshes unpinned npm plugin packages, so the plugin itself can move off the tested build without you changing anything — pin the exact `opencode-kiro@0.5.0-beta.4` spec. |
+| Worked yesterday, broken today | This prerelease targets one pinned OpenCode snapshot (see [Compatibility](#compatibility)). If your OpenCode build moved past the tested SHA, the v2 plugin surface may have changed underneath it. The other cause is an **unpinned** `plugins` entry (a bare `"opencode-kiro"`): the host background-auto-refreshes unpinned npm plugin packages, so the plugin itself can move off the tested build without you changing anything — pin the exact `opencode-kiro@0.5.0-beta.5` spec. |
 
 ## Legacy: v1 / OpenCode v1 users (`0.4.0`)
 
@@ -325,7 +390,7 @@ v1 (`opencode >= 1.16.0`). It uses the v1 contract throughout: singular `plugin`
 arrays in `opencode.json` and `tui.json`, the `opencode plugin opencode-kiro`
 installer, and `part.metadata.kiro` credits. Its full documentation is the README at
 the [`v0.4.0` tag](https://github.com/NachoFLizaur/opencode-kiro/tree/v0.4.0)
-(equivalently, `main`). Do not install `0.5.0-beta.4` into an OpenCode v1 setup.
+(equivalently, `main`). Do not install `0.5.0-beta.5` into an OpenCode v1 setup.
 
 ## Development
 

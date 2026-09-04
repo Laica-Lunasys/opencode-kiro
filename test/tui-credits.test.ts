@@ -2,12 +2,16 @@ import { dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { describe, expect, test, vi } from "vitest"
 import {
+  creditsChipText,
   creditsForMessage,
   formatCredits,
+  formatStallSummary,
   messageCredits,
   readPartCredits,
   spendLines,
+  stallReason,
   sumSessionCredits,
+  STALL_SEPARATOR,
   type CreditMessage,
   type CreditPart,
   type SessionCredits,
@@ -273,6 +277,49 @@ describe("spendLines", () => {
   })
 })
 
+/** Shape of the last ERROR line kiro-cli writes to its chat log (ANSI already stripped). */
+const OVERLOADED_HINT =
+  "2026-09-03T18:21:04.508113Z ERROR chat_cli_v2::agent::rts: 245: failed to send rts request err=ConverseStreamError { status_code: Some(500), kind: ModelOverloadedError }"
+
+describe("stall summary formatting", () => {
+  test("stallReason prefers the kind token, falls back to the first error-kind word, drops the Error suffix", () => {
+    expect(stallReason(OVERLOADED_HINT)).toBe("ModelOverloaded")
+    expect(stallReason("err=ConverseStreamError { status_code: Some(500) }")).toBe("ConverseStream")
+    expect(stallReason("kind: Throttling")).toBe("Throttling") // no suffix to drop
+    expect(stallReason("request failed with status 500")).toBeUndefined() // nothing recognizable
+    expect(stallReason("")).toBeUndefined()
+    expect(stallReason(undefined)).toBeUndefined()
+  })
+
+  test("formatStallSummary rounds to whole seconds (never below 1) and appends the reason when known", () => {
+    expect(formatStallSummary({ stalledMs: 66_000, hint: OVERLOADED_HINT })).toBe("last turn stalled 66s (ModelOverloaded)")
+    expect(formatStallSummary({ stalledMs: 66_000 })).toBe("last turn stalled 66s")
+    expect(formatStallSummary({ stalledMs: 66_000, hint: "status 500" })).toBe("last turn stalled 66s") // unusable hint
+    expect(formatStallSummary({ stalledMs: 1_500 })).toBe("last turn stalled 2s")
+    expect(formatStallSummary({ stalledMs: 200 })).toBe("last turn stalled 1s")
+  })
+
+  test("formatStallSummary yields nothing for absent or malformed status and never throws", () => {
+    for (const status of [undefined, null, {}, "bad", 66_000, { stalledMs: 0 }, { stalledMs: -1 }, { stalledMs: "66" }, { hint: "x" }]) {
+      expect(() => formatStallSummary(status)).not.toThrow()
+      expect(formatStallSummary(status)).toBeUndefined()
+    }
+  })
+
+  test("creditsChipText joins the total and the summary on one line; collapses without kiro metadata", () => {
+    const stalled: SessionCredits = { total: 2, unit: "credit", present: true, status: { stalledMs: 66_000, hint: OVERLOADED_HINT } }
+    expect(creditsChipText(stalled)).toBe(`2 credits${STALL_SEPARATOR}last turn stalled 66s (ModelOverloaded)`)
+    expect(creditsChipText(stalled)).not.toContain("\n")
+
+    expect(creditsChipText({ total: 2, unit: "credit", present: true })).toBe("2 credits")
+    // a stalled turn that reported no credits still shows the summary next to the zero total
+    expect(creditsChipText({ total: 0, unit: undefined, present: true, status: { stalledMs: 40_000 } })).toBe(
+      `0${STALL_SEPARATOR}last turn stalled 40s`,
+    )
+    expect(creditsChipText({ total: 0, unit: undefined, present: false })).toBe("")
+  })
+})
+
 // --- TUI setup/cleanup suite (two append claims: `sidebar.content` +
 // `prompt.footer.status`; `ui.slot` takes a claim object) -----------------------
 // The view modules lazy-import @opentui/solid inside setup. The box view is mocked
@@ -453,7 +500,7 @@ const renderSidebar = (mock: MockTuiContext, props: Record<string, unknown>): ((
   renderSlot(mock, "sidebar.content", props) as () => FakeViewNode | null
 
 describe("tui setup registrations", () => {
-  test("setup registers two append claims (sidebar.content + prompt.footer.status) and one text-ended listener", async () => {
+  test("setup registers two append claims (sidebar.content + prompt.footer.status) and the text/reasoning ended listeners", async () => {
     const mock = makeTuiContext()
 
     const cleanup = await setupPlugin(mock)
@@ -465,8 +512,9 @@ describe("tui setup registrations", () => {
       expect(Object.keys(slot.claim).sort()).toEqual(["append", "render"])
       expect(typeof slot.claim.render).toBe("function")
     }
-    expect(mock.listeners).toHaveLength(1)
-    expect(mock.listeners[0]!.event).toBe("session.text.ended")
+    // credits and stall status ride whichever part closes the turn, so both ended
+    // events feed the same recording path
+    expect(mock.listeners.map((listener) => listener.event)).toEqual(["session.text.ended", "session.reasoning.ended"])
     await cleanup()
   })
 
@@ -616,6 +664,141 @@ describe("footer chip claim (prompt.footer.status)", () => {
       expect(chip).not.toBeNull()
       expect((chip!.children[0] as () => string)()).toBe("3 credits")
     }
+    await cleanup()
+  })
+})
+
+describe("stall summary on the credits surfaces", () => {
+  const STALLED_STATE = { credits: 2, creditsUnit: "credit", status: { stalledMs: 66_000, hint: OVERLOADED_HINT } }
+
+  const chipText = (mock: MockTuiContext): string | null => {
+    const chip = (renderSlot(mock, "prompt.footer.status", { sessionID: "sess", mode: "normal" }) as () => FakeDomNode | null)()
+    return chip === null ? null : (chip.children[0] as () => string)()
+  }
+
+  /**
+   * The box view is mocked file-wide as the setup seam; the real view is loaded here against
+   * the fake renderer and fed the accessor the sidebar claim assembled, so the rendered lines
+   * are checked against the same data the host would render.
+   */
+  const boxLines = async (mock: MockTuiContext): Promise<string[]> => {
+    const { createCreditsBoxView } = await vi.importActual<typeof import("../src/tui/credits-box-view")>(
+      "../src/tui/credits-box-view.js",
+    )
+    const marker = renderSidebar(mock, { sessionID: "sess" })()
+    expect(marker).not.toBeNull()
+    const root = createCreditsBoxView(marker!.credits) as unknown as FakeDomNode
+    return root.children.map((line) => {
+      const node = line as FakeDomNode
+      // the header wraps its content in a <b> node; plain lines carry the accessor directly
+      const content = node.children[0]
+      const accessor = typeof content === "function" ? content : (content as FakeDomNode).children[0]
+      return (accessor as () => string)()
+    })
+  }
+
+  test("chip and box render the last turn's stall summary with the seconds and the reason", async () => {
+    const mock = makeTuiContext({
+      messages: { sess: [{ id: "msg_1", type: "assistant", content: [statePart("text", STALLED_STATE)] }] },
+    })
+    const cleanup = await setupPlugin(mock)
+
+    const chip = chipText(mock)
+    expect(chip).toBe("2 credits · last turn stalled 66s (ModelOverloaded)")
+    expect(chip).toContain("66s")
+    expect(chip).toContain("ModelOverloaded")
+    expect(chip).not.toContain("\n")
+
+    // box: header, total, then the summary on its own third line
+    expect(await boxLines(mock)).toEqual(["Kiro", "2 credits", "last turn stalled 66s (ModelOverloaded)"])
+    await cleanup()
+  })
+
+  test("absent or malformed status shows no summary, the credits stay, and nothing throws", async () => {
+    const states: Array<Record<string, unknown>> = [
+      { credits: 1, creditsUnit: "credit" },
+      { credits: 1, creditsUnit: "credit", status: {} },
+      { credits: 1, creditsUnit: "credit", status: "bad" },
+      { credits: 1, creditsUnit: "credit", status: { stalledMs: 0 } },
+      { credits: 1, creditsUnit: "credit", status: { stalledMs: "66" } },
+    ]
+    for (const state of states) {
+      const mock = makeTuiContext({
+        messages: { sess: [{ id: "msg_1", type: "assistant", content: [statePart("text", state)] }] },
+      })
+      const cleanup = await setupPlugin(mock)
+
+      expect(chipText(mock)).toBe("1 credit")
+      expect(await boxLines(mock)).toEqual(["Kiro", "1 credit", ""]) // third line stays empty
+      // a live event carrying the same malformed status is swallowed too
+      const handler = mock.listeners[0]!.handler
+      expect(() => handler({ data: { sessionID: "sess", assistantMessageID: "msg_1", ordinal: 1, state } })).not.toThrow()
+      expect(chipText(mock)).toBe("1 credit")
+      await cleanup()
+    }
+  })
+
+  test("status without credits is recorded from the ended event and the summary still renders", async () => {
+    // durable text part without state (live reducer drops it); the ended event carries only a status
+    const mock = makeTuiContext({
+      messages: { sess: [{ id: "msg_1", type: "assistant", content: [{ type: "text", text: "live" }] }] },
+    })
+    const cleanup = await setupPlugin(mock)
+    expect(chipText(mock)).toBeNull() // nothing recorded yet
+
+    const textEnded = mock.listeners.find((listener) => listener.event === "session.text.ended")!
+    textEnded.handler({ data: { sessionID: "sess", assistantMessageID: "msg_1", ordinal: 0, state: { status: { stalledMs: 40_000 } } } })
+
+    // the surfaces appear on status alone: a stalled turn is kiro metadata even without credits
+    expect(chipText(mock)).toBe("0 · last turn stalled 40s")
+    expect(renderSidebar(mock, { sessionID: "sess" })()!.credits()).toEqual({
+      total: 0,
+      unit: undefined,
+      present: true,
+      status: { stalledMs: 40_000 },
+    })
+    await cleanup()
+  })
+
+  test("status carried only by the reasoning-ended event is recorded and rendered", async () => {
+    // a stall notice still open at turn end: the SDK closes that reasoning part with the
+    // metadata and no text-ended event carries it
+    const mock = makeTuiContext({
+      messages: {
+        sess: [{ id: "msg_1", type: "assistant", content: [{ type: "reasoning", text: "Kiro: no output for 30s" }, { type: "text", text: "answer" }] }],
+      },
+    })
+    const cleanup = await setupPlugin(mock)
+    const reasoningEnded = mock.listeners.find((listener) => listener.event === "session.reasoning.ended")
+    expect(reasoningEnded).toBeDefined()
+
+    reasoningEnded!.handler({
+      data: { sessionID: "sess", assistantMessageID: "msg_1", ordinal: 0, state: STALLED_STATE },
+    })
+
+    expect(chipText(mock)).toBe("2 credits · last turn stalled 66s (ModelOverloaded)")
+    expect(await boxLines(mock)).toEqual(["Kiro", "2 credits", "last turn stalled 66s (ModelOverloaded)"])
+    await cleanup()
+  })
+
+  test("a clean later turn clears the stall summary while the credits keep summing", async () => {
+    const messages: Record<string, FixtureMessage[]> = {
+      sess: [{ id: "msg_1", type: "assistant", content: [statePart("text", STALLED_STATE)] }],
+    }
+    const mock = makeTuiContext({ messages })
+    const cleanup = await setupPlugin(mock)
+    expect(chipText(mock)).toBe("2 credits · last turn stalled 66s (ModelOverloaded)")
+
+    // the next turn completes without a stall (durable message appended)
+    messages.sess!.push({ id: "msg_2", type: "assistant", content: [statePart("text", { credits: 3, creditsUnit: "credit" })] })
+
+    expect(chipText(mock)).toBe("5 credits")
+    expect(chipText(mock)).not.toContain("stalled")
+    expect(await boxLines(mock)).toEqual(["Kiro", "5 credits", ""])
+
+    // and a stall on the following turn brings the summary back for that turn only
+    messages.sess!.push({ id: "msg_3", type: "assistant", content: [statePart("text", { credits: 1, creditsUnit: "credit", status: { stalledMs: 30_000 } })] })
+    expect(chipText(mock)).toBe("6 credits · last turn stalled 30s")
     await cleanup()
   })
 })

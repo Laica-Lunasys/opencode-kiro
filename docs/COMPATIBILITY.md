@@ -1,6 +1,6 @@
 # Compatibility
 
-`opencode-kiro` `0.5.0-beta.4` is built and tested against one pinned OpenCode v2
+`opencode-kiro` `0.5.0-beta.5` is built and tested against one pinned OpenCode v2
 snapshot. This file is the single place that records the pins; the same values are
 asserted against `package.json` by `test/scaffold.test.ts`.
 
@@ -9,7 +9,7 @@ asserted against `package.json` by `test/scaffold.test.ts`.
 | Item | Value |
 |---|---|
 | Tested OpenCode commit (`upstream/v2` head, 2026-08-29) | `8ba434b5973856b2f32b8cd3543e154b25c413e6` |
-| Package version | `0.5.0-beta.4` |
+| Package version | `0.5.0-beta.5` |
 
 There is no `engines.opencode` constraint: the v2 host has no stable semver yet, so
 the tested commit is the compatibility target. Other v2 snapshots may or may not work.
@@ -21,7 +21,7 @@ the tested commit is the compatibility target. Other v2 snapshots may or may not
 | `@opencode-ai/plugin` | `0.0.0-dev-18686` | devDependencies + peerDependencies (exact) |
 | `@opentui/solid` | `0.5.9` | dependencies (exact; bundler-external, never bundled) |
 | `solid-js` | `1.9.12` | dependencies (exact; bundler-external, never bundled) |
-| `kiro-acp-ai-provider` | `3.1.0` | dependencies (exact) |
+| `kiro-acp-ai-provider` | `3.2.0` | dependencies (exact) |
 
 ## Why the pins are exact
 
@@ -39,7 +39,7 @@ silently resolve to a layout the plugin was not built against.
 1. Pin the plugin spec in your OpenCode config so the host cannot auto-refresh it:
 
    ```json
-   { "plugins": ["opencode-kiro@0.5.0-beta.4"] }
+   { "plugins": ["opencode-kiro@0.5.0-beta.5"] }
    ```
 
 2. Check the OpenCode build you run against the tested commit above. `opencode
@@ -49,7 +49,7 @@ silently resolve to a layout the plugin was not built against.
 3. Confirm the installed pins match this table:
 
    ```bash
-   cd "${XDG_CACHE_HOME:-$HOME/.cache}/opencode/packages/opencode-kiro@0.5.0-beta.4"
+   cd "${XDG_CACHE_HOME:-$HOME/.cache}/opencode/packages/opencode-kiro@0.5.0-beta.5"
    npm ls kiro-acp-ai-provider @opentui/solid solid-js
    ```
 

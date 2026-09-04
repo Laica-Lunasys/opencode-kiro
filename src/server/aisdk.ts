@@ -99,6 +99,7 @@ const SETTINGS_ALLOWLIST = [
   "contextWindow",
   "contextWindows",
   "mcpTimeout",
+  "stall",
 ] as const satisfies readonly (keyof KiroACPProviderSettings)[]
 
 // pick the allowlisted keys present on the event options (skip undefined).

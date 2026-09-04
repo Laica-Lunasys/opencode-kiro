@@ -959,6 +959,354 @@ describe("discovery: credential events on legacy and current hosts", () => {
 })
 
 // ---------------------------------------------------------------------------
+// discovery resilience: probe deadline, bounded retry, stderr reporting
+// ---------------------------------------------------------------------------
+
+describe("discovery: probe deadline, bounded retry and one probe per login", () => {
+  // discovery constants (discovery.ts DISCOVERY_TIMEOUT_MS / RETRY_BACKOFF_MS)
+  const PROBE_DEADLINE_MS = 60_000
+  const BACKOFF_MS = [5_000, 20_000, 60_000]
+  const LOG_LINE = /^\[opencode-kiro\] model discovery failed for /
+
+  let errorSpy: ReturnType<typeof spyOnConsoleError>
+
+  /** silent console.error spy: stderr is the plugin's only diagnostics channel */
+  function spyOnConsoleError() {
+    return vi.spyOn(console, "error").mockImplementation(() => {})
+  }
+
+  beforeEach(() => {
+    errorSpy = spyOnConsoleError()
+  })
+
+  afterEach(() => {
+    errorSpy.mockRestore()
+  })
+
+  /** manually-controlled listModels result */
+  function deferredModels() {
+    let resolve!: (models: ModelWithEfforts[]) => void
+    const promise = new Promise<ModelWithEfforts[]>((r) => (resolve = r))
+    return { promise, resolve }
+  }
+
+  /** the kiro model keys a rich catalog draft publishes after the transform */
+  function publishedModels(h: Harness, seeds: string[]): string[] {
+    const catalog = makeCatalogDraft()
+    seedRichKiro(
+      catalog,
+      seeds.map((id) => ({ key: id, modelID: id })),
+    )
+    h.catalogTransform(catalog.draft)
+    return [...(catalog.providers.get("kiro")?.models.keys() ?? [])]
+  }
+
+  /** every stderr line written so far, as strings */
+  function errorLines(): string[] {
+    return errorSpy.mock.calls.map((call) => String(call[0]))
+  }
+
+  test("a probe that exceeds the deadline is reported on stderr and the retry recovers the catalog", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    const hung = deferredModels() // never settles
+    mockListModels
+      .mockImplementationOnce(() => hung.promise)
+      .mockResolvedValueOnce([runtime("model-a")])
+
+    const cleanup = await runSetup(h)
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1) // the probe deadline
+
+    // nothing happens before the deadline
+    await vi.advanceTimersByTimeAsync(PROBE_DEADLINE_MS - 1)
+    expect(errorSpy).not.toHaveBeenCalled()
+
+    // deadline: one stderr line naming the location, the attempt and the next step
+    await vi.advanceTimersByTimeAsync(1)
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    const line = errorLines()[0]!
+    expect(line).toMatch(LOG_LINE)
+    expect(line).toContain(h.directory)
+    expect(line).toMatch(/\(attempt 1\/4\)/)
+    expect(line).toMatch(/no response after 60s/)
+    expect(line).toMatch(/retrying in 5s$/)
+    expect(h.reload).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(1) // the retry, not the deadline
+
+    // first backoff step: the retry probes again and publishes
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]!)
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(2)
+    expect(mockListModels).toHaveBeenNthCalledWith(2, { cwd: h.directory })
+    expect(h.reload).toHaveBeenCalledTimes(1)
+    expect(publishedModels(h, ["model-a", "other"])).toEqual(["model-a"])
+    expect(vi.getTimerCount()).toBe(0)
+
+    await cleanup()
+  })
+
+  test("a late result that arrives before the retry fires is applied and cancels the retry", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    const slow = deferredModels()
+    mockListModels.mockImplementation(() => slow.promise)
+
+    const cleanup = await runSetup(h)
+    await flush()
+
+    await vi.advanceTimersByTimeAsync(PROBE_DEADLINE_MS)
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1) // retry pending
+
+    // the abandoned probe answers for the still-current generation
+    slow.resolve([runtime("model-a")])
+    await flush()
+
+    expect(h.reload).toHaveBeenCalledTimes(1)
+    expect(publishedModels(h, ["model-a"])).toEqual(["model-a"])
+    expect(vi.getTimerCount()).toBe(0) // the retry became redundant
+
+    // no second probe ever runs
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 2)
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+
+    await cleanup()
+  })
+
+  test("a late result from an abandoned probe is discarded once a retry has superseded it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    const first = deferredModels()
+    const second = deferredModels()
+    mockListModels.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise)
+
+    const cleanup = await runSetup(h)
+    await flush()
+
+    // deadline, then the retry starts a fresh probe (new generation)
+    await vi.advanceTimersByTimeAsync(PROBE_DEADLINE_MS + BACKOFF_MS[0]!)
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(2)
+
+    // the abandoned first probe answers now: superseded, so nothing is published
+    first.resolve([runtime("stale-model")])
+    await flush()
+    expect(h.reload).not.toHaveBeenCalled()
+    const beforeFresh = makeCatalogDraft() // fallback-shaped: nothing self-registers without a snapshot
+    h.catalogTransform(beforeFresh.draft)
+    expect(beforeFresh.providers.size).toBe(0)
+
+    // the current probe's answer is the one that lands
+    second.resolve([runtime("fresh-model")])
+    await flush()
+    expect(h.reload).toHaveBeenCalledTimes(1)
+    expect(publishedModels(h, ["stale-model", "fresh-model"])).toEqual(["fresh-model"])
+
+    await cleanup()
+  })
+
+  test("a failed probe is not retried once the connection is no longer active", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockRejectedValue(new Error("acp transport down"))
+
+    const cleanup = await runSetup(h)
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(errorLines()[0]).toMatch(/acp transport down; retrying in 5s$/)
+    expect(vi.getTimerCount()).toBe(1) // retry pending
+
+    // logout before the backoff elapses
+    h.active.mockResolvedValue(undefined)
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]!)
+    await flush()
+
+    // the retry tick re-checked the connection and ended the chain quietly
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    await vi.advanceTimersByTimeAsync(PROBE_DEADLINE_MS * 3)
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+
+    await cleanup()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  test("a new discovery supersedes the pending retry so only one attempt chain runs", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockRejectedValueOnce(new Error("first attempt failed")).mockResolvedValue([runtime("model-a")])
+
+    const cleanup = await runSetup(h)
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1) // retry pending
+
+    // a credential event lands while the retry is pending: fresh chain, fresh probe
+    h.events.push(credentialUpdatedEvent())
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(2)
+    expect(h.reload).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0) // the old retry was cancelled, not left to fire
+
+    // the old backoff window passes without a third probe
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 2)
+    expect(mockListModels).toHaveBeenCalledTimes(2)
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    await cleanup()
+  })
+
+  test("cleanup clears a pending probe deadline and a pending retry", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+
+    // pending deadline: the probe never answers
+    const hung = deferredModels()
+    mockListModels.mockImplementation(() => hung.promise)
+    const h1 = makeMockContext()
+    h1.active.mockResolvedValue({ integrationID: "kiro" })
+    const cleanup1 = await runSetup(h1)
+    await flush()
+    expect(vi.getTimerCount()).toBe(1)
+
+    await cleanup1()
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(PROBE_DEADLINE_MS * 2)
+    expect(errorSpy).not.toHaveBeenCalled() // no deadline fired after disposal
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+
+    // pending retry: the probe failed and the backoff is scheduled
+    mockListModels.mockRejectedValue(new Error("acp transport down"))
+    const h2 = makeMockContext()
+    h2.active.mockResolvedValue({ integrationID: "kiro" })
+    const cleanup2 = await runSetup(h2)
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(2)
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1)
+
+    await cleanup2()
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(PROBE_DEADLINE_MS * 2)
+    expect(mockListModels).toHaveBeenCalledTimes(2) // no retry after disposal
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test("backoff is bounded: four attempts, then the chain gives up until the next credential change", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const h = makeMockContext()
+    h.active.mockResolvedValue({ integrationID: "kiro" })
+    mockListModels.mockRejectedValue(new Error("acp transport down"))
+
+    // setup resolves even though discovery is failing (fail open)
+    const cleanup = await runSetup(h)
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(1)
+
+    // each backoff step yields exactly one more attempt
+    let attempts = 1
+    for (const delay of BACKOFF_MS) {
+      await vi.advanceTimersByTimeAsync(delay - 1)
+      expect(mockListModels).toHaveBeenCalledTimes(attempts)
+      await vi.advanceTimersByTimeAsync(1)
+      await flush()
+      attempts += 1
+      expect(mockListModels).toHaveBeenCalledTimes(attempts)
+    }
+    expect(mockListModels).toHaveBeenCalledTimes(4)
+
+    // every attempt was reported; the last one announces the give-up
+    const lines = errorLines()
+    expect(lines).toHaveLength(4)
+    for (const [index, line] of lines.entries()) {
+      expect(line).toMatch(LOG_LINE)
+      expect(line).toContain(`(attempt ${index + 1}/4)`)
+    }
+    expect(lines[0]).toMatch(/retrying in 5s$/)
+    expect(lines[1]).toMatch(/retrying in 20s$/)
+    expect(lines[2]).toMatch(/retrying in 60s$/)
+    expect(lines[3]).toMatch(/giving up until the next credential change$/)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(h.reload).not.toHaveBeenCalled()
+
+    // exhausted: no further attempts on their own
+    await vi.advanceTimersByTimeAsync(PROBE_DEADLINE_MS * 5)
+    expect(mockListModels).toHaveBeenCalledTimes(4)
+
+    // the plugin keeps working without a runtime catalog: the transform leaves
+    // the draft untouched
+    expect(publishedModels(h, ["existing-model"])).toEqual(["existing-model"])
+
+    // the next credential change starts a new chain
+    mockListModels.mockResolvedValue([runtime("model-a")])
+    h.events.push(credentialUpdatedEvent())
+    await flush()
+    expect(mockListModels).toHaveBeenCalledTimes(5)
+    expect(h.reload).toHaveBeenCalledTimes(1)
+
+    await cleanup()
+  })
+
+  test("a burst of login events yields one probe per location", async () => {
+    // two locations, each with its own setup and its own mock context. The
+    // credential events of one login arrive in quick succession; while the
+    // first probe is in flight the rest coalesce onto it. Contexts are driven
+    // one after the other so their dynamic SDK imports never overlap.
+    const first = deferredModels()
+    const second = deferredModels()
+    mockListModels.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise)
+
+    const h1 = makeMockContext()
+    const cleanup1 = await runSetup(h1)
+    await flush()
+    const h2 = makeMockContext()
+    const cleanup2 = await runSetup(h2)
+    await flush()
+    expect(h1.directory).not.toBe(h2.directory)
+    expect(mockListModels).not.toHaveBeenCalled() // disconnected at setup
+
+    const loginBurst = () => [kiroEvent(), credentialUpdatedEvent(), credentialSwitchedEvent("kiro", "credential-1")]
+    const probesFor = (h: Harness) => mockListModels.mock.calls.filter(([arg]) => arg?.cwd === h.directory).length
+
+    // login on location 1
+    h1.active.mockResolvedValue({ integrationID: "kiro" })
+    for (const event of loginBurst()) h1.events.push(event)
+    await flush()
+    expect(probesFor(h1)).toBe(1)
+    expect(probesFor(h2)).toBe(0)
+
+    // login on location 2
+    h2.active.mockResolvedValue({ integrationID: "kiro" })
+    for (const event of loginBurst()) h2.events.push(event)
+    await flush()
+    expect(probesFor(h1)).toBe(1)
+    expect(probesFor(h2)).toBe(1)
+    expect(mockListModels).toHaveBeenCalledTimes(2)
+
+    // each location publishes its own answer exactly once
+    first.resolve([runtime("model-a")])
+    second.resolve([runtime("model-b")])
+    await flush()
+    expect(h1.reload).toHaveBeenCalledTimes(1)
+    expect(h2.reload).toHaveBeenCalledTimes(1)
+    expect(publishedModels(h1, ["model-a", "model-b"])).toEqual(["model-a"])
+    expect(publishedModels(h2, ["model-a", "model-b"])).toEqual(["model-b"])
+
+    await cleanup1()
+    await cleanup2()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // AISDK hook ownership + aggregated idempotent cleanup
 // ---------------------------------------------------------------------------
 
@@ -1539,6 +1887,82 @@ describe("plugin options", () => {
     await h.sdkHook({ model: { modelID: "claude-sonnet-4.6" }, package: "kiro-acp-ai-provider", options, sdk: undefined })
     expect(mockCreateKiroAcp).toHaveBeenCalledWith(expect.objectContaining({ cwd: h.directory }))
     expect(JSON.stringify(mockCreateKiroAcp.mock.calls)).not.toContain("/elsewhere")
+
+    await cleanup()
+  })
+
+  /** run the host-side flow: provider settings (+ injected fetch) -> sdk hook -> factory settings */
+  async function factorySettings(h: Harness, providerSettings: Record<string, unknown>) {
+    mockCreateKiroAcp.mockClear() // the factory mock is shared across setups within one test
+    const options = { ...providerSettings, fetch: () => {} }
+    await h.sdkHook({ model: { modelID: "claude-sonnet-4.6" }, package: "kiro-acp-ai-provider", options, sdk: undefined })
+    expect(mockCreateKiroAcp).toHaveBeenCalledTimes(1)
+    return mockCreateKiroAcp.mock.calls[0]![0] as Record<string, unknown>
+  }
+
+  test("stall option flows through the provider settings to createKiroAcp", async () => {
+    const stall = { afterMs: 5_000, live: "off" }
+    const h = makeMockContext({ options: { stall } })
+    const { cleanup, record } = await setupAndTransform(h)
+
+    // catalog side: the validated object is emitted as-is
+    expect(record.provider.settings.stall).toEqual(stall)
+
+    // host side: the allowlist lets it through to the factory unchanged
+    const settings = await factorySettings(h, record.provider.settings)
+    expect(settings.stall).toEqual(stall)
+    // still one shared provider per config: the option does not leak elsewhere
+    expect(settings).toEqual(expect.objectContaining({ agent: "opencode", mcpTimeout: 45, cwd: h.directory }))
+
+    await cleanup()
+  })
+
+  test("invalid stall shapes are dropped member by member without throwing", async () => {
+    // not an object at all: the key is absent everywhere
+    for (const stall of ["soon", 30_000, true, null, [5_000]]) {
+      const h = makeMockContext({ options: { stall } })
+      const { cleanup, record } = await setupAndTransform(h)
+      expect("stall" in record.provider.settings).toBe(false)
+      const settings = await factorySettings(h, record.provider.settings)
+      expect("stall" in settings).toBe(false)
+      await cleanup()
+    }
+
+    // every member invalid: nothing valid remains, so the key is absent
+    for (const stall of [{ afterMs: -1, live: "loud" }, { afterMs: "30s" }, { afterMs: Number.NaN }, { live: "on" }, {}]) {
+      const h = makeMockContext({ options: { stall } })
+      const { cleanup, record } = await setupAndTransform(h)
+      expect("stall" in record.provider.settings).toBe(false)
+      await cleanup()
+    }
+
+    // partially valid: the valid member survives alone
+    const h1 = makeMockContext({ options: { stall: { afterMs: -1, live: "reasoning" } } })
+    const first = await setupAndTransform(h1)
+    expect(first.record.provider.settings.stall).toEqual({ live: "reasoning" })
+    await first.cleanup()
+
+    const h2 = makeMockContext({ options: { stall: { afterMs: 45_000, live: "loud", unknown: 1 } } })
+    const second = await setupAndTransform(h2)
+    expect(second.record.provider.settings.stall).toEqual({ afterMs: 45_000 })
+    await second.cleanup()
+
+    // zero is a valid threshold (it disables the watchdog), unlike a negative value
+    const h3 = makeMockContext({ options: { stall: { afterMs: 0 } } })
+    const third = await setupAndTransform(h3)
+    expect(third.record.provider.settings.stall).toEqual({ afterMs: 0 })
+    await third.cleanup()
+  })
+
+  test("omitted stall option leaves the key out of the provider and factory settings", async () => {
+    const h = makeMockContext({ options: { agent: "custom" } })
+    const { cleanup, record } = await setupAndTransform(h)
+
+    // no default is invented: the SDK's own stall defaults apply when the key is absent
+    expect("stall" in record.provider.settings).toBe(false)
+    const settings = await factorySettings(h, record.provider.settings)
+    expect("stall" in settings).toBe(false)
+    expect(Object.keys(settings).sort()).toEqual(["agent", "clientInfo", "contextWindows", "cwd", "mcpTimeout", "trustAllTools"])
 
     await cleanup()
   })

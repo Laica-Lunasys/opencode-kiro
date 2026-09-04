@@ -16,11 +16,16 @@ import { buildCleanup, createServerState } from "./server/lifecycle.js"
 // site is required. No `cwd` option by design — the per-location
 // integration.list() derivation is strictly better (discovery.ts).
 //
-// Exactly three options: `agent` (default "opencode"), `mcpTimeout` (default
-// 45, must be a positive finite number of minutes), `discover` (default true).
-// Type-invalid values fall back to the defaults and unknown keys are ignored
-// silently (fail open). `trustAllTools` is not exposed.
+// Exactly four options: `agent` (default "opencode"), `mcpTimeout` (default
+// 45, must be a positive finite number of minutes), `discover` (default true),
+// and `stall` (no default: the SDK's stall watchdog defaults apply when it is
+// absent). `stall` is an object with optional `afterMs` (finite number >= 0,
+// where 0 disables the watchdog) and `live` ("off" | "reasoning"); invalid
+// members are dropped individually and an object left empty is treated as
+// absent. Type-invalid values fall back to the defaults and unknown keys are
+// ignored silently (fail open). `trustAllTools` is not exposed.
 function resolveOptions(raw: Record<string, unknown>): KiroPluginOptions {
+  const stall = resolveStall(raw.stall)
   return {
     agent: typeof raw.agent === "string" && raw.agent !== "" ? raw.agent : "opencode",
     mcpTimeout:
@@ -28,7 +33,21 @@ function resolveOptions(raw: Record<string, unknown>): KiroPluginOptions {
         ? raw.mcpTimeout
         : 45,
     discover: typeof raw.discover === "boolean" ? raw.discover : true,
+    ...(stall !== undefined ? { stall } : {}),
   }
+}
+
+// `stall` option validation (@since 0.5.0-beta.5). Only a plain object is
+// accepted; each member is kept only when it matches the SDK type, so a
+// partially valid object still forwards its valid members. Returns undefined
+// when nothing valid remains, which keeps the key out of the provider settings.
+function resolveStall(raw: unknown): KiroPluginOptions["stall"] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined
+  const { afterMs, live } = raw as Record<string, unknown>
+  const stall: NonNullable<KiroPluginOptions["stall"]> = {}
+  if (typeof afterMs === "number" && Number.isFinite(afterMs) && afterMs >= 0) stall.afterMs = afterMs
+  if (live === "off" || live === "reasoning") stall.live = live
+  return Object.keys(stall).length > 0 ? stall : undefined
 }
 
 // setup order: resolve plugin options -> build per-location state ->
