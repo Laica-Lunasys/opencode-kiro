@@ -10,7 +10,12 @@ const execFile = promisify(execFileCallback)
 const ROOT = join(import.meta.dirname, "..")
 const tempDirs: string[] = []
 
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm"
+const npmCli = process.env.npm_execpath
+if (!npmCli) throw new Error("npm_execpath is required for package tests")
+
+function runNpm(args: string[], cwd: string) {
+  return execFile(process.execPath, [npmCli, ...args], { cwd })
+}
 interface PackageManifest {
   name: string
   version: string
@@ -125,7 +130,7 @@ describe("stable OpenCode v2 package contract", () => {
 
 describe("distribution", () => {
   test("npm pack includes the manifest and both built entries", async () => {
-    const { stdout } = await execFile(npmCommand, ["pack", "--dry-run", "--json"], { cwd: ROOT })
+    const { stdout } = await runNpm(["pack", "--dry-run", "--json"], ROOT)
     const result = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>
     const files = result[0]?.files.map((entry) => entry.path) ?? []
     expect(files).toContain("package.json")
@@ -142,16 +147,16 @@ describe("distribution", () => {
     const consumer = await mkdtemp(join(tmpdir(), "opencode-kiro-consumer-"))
     tempDirs.push(packDir, consumer)
 
-    const { stdout } = await execFile(npmCommand, ["pack", "--json", "--pack-destination", packDir], {
-      cwd: ROOT,
-    })
+    const { stdout } = await runNpm(
+      ["pack", "--json", "--pack-destination", packDir],
+      ROOT,
+    )
     const packed = JSON.parse(stdout) as Array<{ filename: string }>
     const tarball = join(packDir, packed[0]!.filename)
     await writeFile(join(consumer, "package.json"), '{"private":true,"type":"module"}\n')
-    await execFile(
-      "npm",
+    await runNpm(
       ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball],
-      { cwd: consumer },
+      consumer,
     )
 
     const probe = [
