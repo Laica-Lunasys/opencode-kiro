@@ -92,6 +92,7 @@ describe("stable OpenCode v2 package contract", () => {
     expect(pkg.scripts.check).toContain("typecheck")
     expect(pkg.scripts.check).toContain("test")
     expect(pkg.scripts.pretest).toContain("build")
+    expect(pkg.scripts.prepare).toContain("build")
     expect(pkg.scripts.prepublishOnly).toContain("check")
   })
 
@@ -133,7 +134,7 @@ describe("stable OpenCode v2 package contract", () => {
 
 describe("distribution", () => {
   test("npm pack includes the manifest and both built entries", async () => {
-    const { stdout } = await runNpm(["pack", "--dry-run", "--json"], ROOT)
+    const { stdout } = await runNpm(["pack", "--ignore-scripts", "--dry-run", "--json"], ROOT)
     const result = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>
     const files = result[0]?.files.map((entry) => entry.path) ?? []
     expect(files).toContain("package.json")
@@ -153,7 +154,7 @@ describe("distribution", () => {
       tempDirs.push(packDir, consumer)
 
       const { stdout } = await runNpm(
-        ["pack", "--json", "--pack-destination", packDir],
+        ["pack", "--ignore-scripts", "--json", "--pack-destination", packDir],
         ROOT,
       )
       const packed = JSON.parse(stdout) as Array<{ filename: string }>
