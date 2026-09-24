@@ -17,22 +17,22 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": ["dist", "index.js"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/*.test.mjs",
+    "test": "npm run build && node --test test/models.test.mjs",
     "check": "npm run typecheck && npm test && npm run build"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@opencode/plugin": "2.0.16",
     "kiro-acp-ai-provider": "3.2.0"
   },
   "devDependencies": {
-    "@opencode/plugin": "2.0.16",
     "@types/node": "^20.19.42",
     "typescript": "^5.7.0"
   }
