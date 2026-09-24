@@ -485,7 +485,9 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth", () => {
     // record — including a stray one — enters the same login flow
     const authorization = await authorize({ unused: "answer" })
     expect(mockExecFile).toHaveBeenCalledTimes(1)
-    expect(mockExecFile).toHaveBeenCalledWith("kiro-cli", ["login"], { shell: false })
+    expect(mockExecFile).toHaveBeenCalledWith("kiro-cli", ["login"], {
+      shell: process.platform === "win32",
+    })
     expect(authorization.mode).toBe("auto")
 
     // poll observes authenticated -> child stops,
