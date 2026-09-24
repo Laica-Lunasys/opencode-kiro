@@ -10,6 +10,7 @@ const execFile = promisify(execFileCallback)
 const ROOT = join(import.meta.dirname, "..")
 const tempDirs: string[] = []
 
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm"
 interface PackageManifest {
   name: string
   version: string
@@ -124,7 +125,7 @@ describe("stable OpenCode v2 package contract", () => {
 
 describe("distribution", () => {
   test("npm pack includes the manifest and both built entries", async () => {
-    const { stdout } = await execFile("npm", ["pack", "--dry-run", "--json"], { cwd: ROOT })
+    const { stdout } = await execFile(npmCommand, ["pack", "--dry-run", "--json"], { cwd: ROOT })
     const result = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>
     const files = result[0]?.files.map((entry) => entry.path) ?? []
     expect(files).toContain("package.json")
@@ -141,7 +142,7 @@ describe("distribution", () => {
     const consumer = await mkdtemp(join(tmpdir(), "opencode-kiro-consumer-"))
     tempDirs.push(packDir, consumer)
 
-    const { stdout } = await execFile("npm", ["pack", "--json", "--pack-destination", packDir], {
+    const { stdout } = await execFile(npmCommand, ["pack", "--json", "--pack-destination", packDir], {
       cwd: ROOT,
     })
     const packed = JSON.parse(stdout) as Array<{ filename: string }>
