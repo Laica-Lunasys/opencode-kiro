@@ -8,7 +8,8 @@ export default defineConfig({
   // The host (opencode) provides the plugin API and TUI runtime; the SDK is
   // resolved separately by opencode's resolveSDK. None of these may be bundled.
   external: [
-    "@opencode-ai/plugin",
+    "@opencode/plugin",
+    "@opencode/plugin/tui",
     "kiro-acp-ai-provider",
     "@opentui/core",
     "@opentui/keymap",

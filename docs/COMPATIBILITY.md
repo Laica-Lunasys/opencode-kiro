@@ -1,59 +1,63 @@
 # Compatibility
 
-`opencode-kiro` `0.5.0-beta.5` is built and tested against one pinned OpenCode v2
-snapshot. This file is the single place that records the pins; the same values are
-asserted against `package.json` by `test/scaffold.test.ts`.
+This fork targets the stable OpenCode v2 plugin API and the official Kiro CLI ACP
+transport. The versions below are exact build and test pins for `0.5.0-laica.1`.
 
-## Tested OpenCode snapshot
+| Component | Tested version | Notes |
+|---|---:|---|
+| OpenCode | `2.0.16` | Stable v2 plugin loader and provider API |
+| `@opencode/plugin` | `2.0.16` | Exact runtime dependency |
+| `kiro-acp-ai-provider` | `3.2.0` | Talks to `kiro-cli acp` |
+| Kiro CLI | `2.15.0` | Authentication and runtime model discovery |
+| Node.js | `>=20` | Build/package scripts |
+| Bun | `1.3.9` | OpenCode package installation/runtime |
+| `@opentui/solid` | `0.5.12` | Exact TUI runtime dependency |
+| `solid-js` | `1.9.12` | Exact OpenTUI peer version |
 
-| Item | Value |
-|---|---|
-| Tested OpenCode commit (`upstream/v2` head, 2026-08-29) | `8ba434b5973856b2f32b8cd3543e154b25c413e6` |
-| Package version | `0.5.0-beta.5` |
+## Operating systems
 
-There is no `engines.opencode` constraint: the v2 host has no stable semver yet, so
-the tested commit is the compatibility target. Other v2 snapshots may or may not work.
+- **Linux:** tested directly on x86_64 Linux.
+- **macOS:** supported without OS-specific paths or shell commands. Authentication,
+  model discovery, and generation are delegated to the platform's `kiro-cli` binary.
+  The auth implementation also has explicit process-spawn tests for POSIX and Windows.
 
-## Exact pins (v2-sensitive dependencies)
+Both systems require `kiro-cli` and `opencode` on `PATH`. Kiro CLI owns credentials in
+the platform-appropriate store; this plugin does not read or copy them.
 
-| Package | Pinned version | Where |
-|---|---|---|
-| `@opencode-ai/plugin` | `0.0.0-dev-18686` | devDependencies + peerDependencies (exact) |
-| `@opentui/solid` | `0.5.9` | dependencies (exact; bundler-external, never bundled) |
-| `solid-js` | `1.9.12` | dependencies (exact; bundler-external, never bundled) |
-| `kiro-acp-ai-provider` | `3.2.0` | dependencies (exact) |
+## Install targets
 
-## Why the pins are exact
+Track the fork's main branch:
 
-The OpenCode v2 plugin contract is still moving, and `@opencode-ai/plugin` ships on
-the `dev` channel as CI builds of individual host commits. The version above is the
-build of the tested commit; neighbouring builds can carry a different exports layout
-or event set. `@opentui/solid` sets a hard peer floor on each release and peers a
-single exact `solid-js` version, so both are pinned to the one combination the host
-snapshot accepts. Dist-tags (`latest`, `next`, `beta`, `dev`) and range specifiers
-(`^`, `~`, `*`) are never used for these four packages, because any of them can
-silently resolve to a layout the plugin was not built against.
+```bash
+opencode plugin add github:Laica-Lunasys/opencode-kiro#main
+```
 
-## Verifying your install
+For reproducible installs, use the release tag:
 
-1. Pin the plugin spec in your OpenCode config so the host cannot auto-refresh it:
+```bash
+opencode plugin add github:Laica-Lunasys/opencode-kiro#v0.5.0-laica.1
+```
 
-   ```json
-   { "plugins": ["opencode-kiro@0.5.0-beta.5"] }
-   ```
+OpenCode supports npm-compatible Git specifications for public and private package
+plugins. No clone path, global npm install, or manually generated tarball is required.
 
-2. Check the OpenCode build you run against the tested commit above. `opencode
-   --version` prints a build version, not a commit, so run `git rev-parse HEAD` in
-   the checkout the opencode binary was built from. A build past the tested commit
-   may have changed the plugin surface underneath this release.
-3. Confirm the installed pins match this table:
+## Validation
 
-   ```bash
-   cd "${XDG_CACHE_HOME:-$HOME/.cache}/opencode/packages/opencode-kiro@0.5.0-beta.5"
-   npm ls kiro-acp-ai-provider @opentui/solid solid-js
-   ```
+```bash
+npm ci
+npm run check
+npm pack --dry-run
+```
 
-   `npm ls` may report unrelated tree warnings; only the three version numbers matter.
+A live smoke test additionally requires an authenticated Kiro CLI:
 
-If any value differs, remove the cached package and reinstall with the exact spec.
-See [CHANGELOG.md](../CHANGELOG.md) for what each release changed.
+```bash
+kiro-cli whoami
+kiro-cli chat --list-models --format json
+opencode models kiro
+opencode run --model kiro/claude-opus-5 "Reply with OK"
+```
+
+The live Kiro model lineup can change independently of this package. The plugin reads
+that runtime lineup through ACP on startup and after credential changes, then reloads
+the OpenCode provider catalog.

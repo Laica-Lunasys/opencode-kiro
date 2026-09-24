@@ -1,19 +1,26 @@
 {
   "name": "opencode-kiro",
-  "version": "0.5.0-beta.5",
-  "description": "The ACP-compliant Kiro plugin for opencode: auth via the official kiro-cli login, the live Kiro model lineup through the Agent Client Protocol, and TUI credits display",
+  "version": "0.5.0-laica.1",
+  "description": "OpenCode v2 plugin for Amazon Kiro through the official kiro-cli ACP interface",
   "license": "MIT",
   "author": "Nacho F. Lizaur (https://github.com/NachoFLizaur)",
+  "contributors": [
+    "Laica-Lunasys (https://github.com/Laica-Lunasys)"
+  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NachoFLizaur/opencode-kiro.git"
+    "url": "git+https://github.com/Laica-Lunasys/opencode-kiro.git"
   },
   "bugs": {
-    "url": "https://github.com/NachoFLizaur/opencode-kiro/issues"
+    "url": "https://github.com/Laica-Lunasys/opencode-kiro/issues"
   },
-  "homepage": "https://github.com/NachoFLizaur/opencode-kiro#readme",
+  "homepage": "https://github.com/Laica-Lunasys/opencode-kiro#readme",
   "type": "module",
   "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
     "./server": {
       "types": "./dist/server.d.ts",
       "default": "./dist/server.js"
@@ -33,24 +40,23 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "check": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run check"
   },
   "engines": {
     "node": ">=20"
   },
-  "publishConfig": {
-    "tag": "beta"
-  },
-  "peerDependencies": {
-    "@opencode-ai/plugin": "0.0.0-dev-18686"
-  },
   "dependencies": {
-    "@opentui/solid": "0.5.9",
+    "@opencode/plugin": "2.0.16",
+    "@opentui/solid": "0.5.12",
     "kiro-acp-ai-provider": "3.2.0",
     "solid-js": "1.9.12"
   },
+  "peerDependencies": {
+    "@opentui/core": "0.5.12"
+  },
   "devDependencies": {
-    "@opencode-ai/plugin": "0.0.0-dev-18686",
+    "@opentui/core": "0.5.12",
     "@types/node": "^20.19.42",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",

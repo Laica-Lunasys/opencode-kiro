@@ -5,11 +5,36 @@ All notable changes to `opencode-kiro` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The `0.5.0` prerelease line targets the **unreleased OpenCode v2** plugin contract at
-one pinned host snapshot per release. It does not work with OpenCode v1 and carries no
-stability promise: it may break when OpenCode's v2 branch moves. OpenCode v1 users:
-stay on `opencode-kiro@0.4.0` (the `main` branch / npm `latest` line). No OpenCode v2
-release date is known or claimed here. Current pins: [docs/COMPATIBILITY.md](./docs/COMPATIBILITY.md).
+The Laica-Lunasys fork tracks stable OpenCode v2. The upstream v1 and prerelease
+history is retained below for attribution and reference.
+
+## [0.5.0-laica.1] - 2026-09-25
+
+### Added
+
+- Stable OpenCode v2.0.16 support through `@opencode/plugin@2.0.16`.
+- GitHub package installation for macOS and Linux with
+  `github:Laica-Lunasys/opencode-kiro#main`.
+- A root package export, as required by the stable v2 plugin loader.
+
+### Changed
+
+- Model discovery now treats the official Kiro ACP runtime list as authoritative.
+  Every model returned by Kiro is registered, including models not yet present in
+  OpenCode's static catalog, while available catalog metadata is preserved.
+- Provider registration uses the stable `ctx.provider.transform()` API and the
+  plugin location supplied by OpenCode.
+- TUI loading uses the standard `./tui` package export instead of the removed
+  prerelease `tui: true` server flag.
+- Runtime dependencies are pinned to `kiro-acp-ai-provider@3.2.0`,
+  `@opentui/solid@0.5.12`, and `solid-js@1.9.12`.
+
+### Fixed
+
+- Newly released Kiro models such as `claude-opus-5` no longer disappear when
+  OpenCode's built-in model catalog has not caught up.
+- Package metadata and installation instructions now work without hard-coded
+  Linux paths, making the same repository installable on macOS.
 
 ## [0.5.0-beta.5] - 2026-09-04
 

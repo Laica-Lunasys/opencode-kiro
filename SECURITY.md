@@ -2,35 +2,43 @@
 
 ## Supported versions
 
-Only the latest published version of each active line on npm receives security fixes: `0.4.0` is the stable v1 line and `0.5.0-beta.x` is the v2 prerelease line. Check the npm dist-tags and the release notes in this repo for the current versions, and please upgrade before reporting.
+Security fixes are made on the latest Laica-Lunasys OpenCode v2 release. The upstream
+`0.4.x` v1 and `0.5.0-beta.x` histories are retained for attribution but are not
+maintained by this fork.
 
 ## Scope and threat model
 
-This plugin does not store or transmit AWS credentials itself. Authentication is delegated to the official `kiro-cli`, which owns the AWS IAM Identity Center (SSO) token and caches it under your home directory (`~/.aws/sso/cache`). The plugin's auth authority is `verifyAuth()`, which delegates to `kiro-cli`; the only credential the plugin stores is a non-secret presence record (`expires: 0`, no token copies). It never reads opencode's private `auth.json` and never writes `tui.json`. It forwards prompts to a locally spawned `kiro-cli` process over the Agent Client Protocol (ACP) and sends no credentials, prompt content, or telemetry anywhere beyond that local process and the Kiro service that `kiro-cli` connects to.
+This plugin does not store or transmit AWS credentials itself. Authentication is
+delegated to the official `kiro-cli`, which owns the platform-specific credential
+store and refresh flow. The plugin calls Kiro CLI's `whoami` behavior through
+`verifyAuthAsync()` and stores only a non-secret OpenCode presence record. It does not
+read OpenCode's private auth files or Kiro/AWS token files.
 
-Like opencode itself, the agent is not sandboxed; the plugin runs within opencode's trust and permission model.
+Prompts and tool definitions are sent to a locally spawned `kiro-cli acp` process over
+stdio and a local IPC bridge. From there, Kiro CLI communicates with the Kiro service
+under AWS/Kiro policies. The plugin does not add an HTTP proxy, telemetry endpoint, or
+credential reuse against another provider.
+
+Like OpenCode itself, plugins and agent tools are not a security sandbox. Tool calls
+remain subject to OpenCode's permission model, and users should review requested
+operations before approval.
 
 Out of scope:
 
-| Area | Where to report |
-| ---- | --------------- |
-| Bugs in `kiro-cli` or the Kiro service | Amazon Web Services |
-| How the Kiro service handles your data | Governed by AWS policy |
-| opencode core, its permission model, or plugin loader | The opencode project |
-| Your own opencode config or `plugin` list (user-controlled) | Not a vulnerability |
+| Area | Report to |
+|---|---|
+| Kiro CLI or Kiro service behavior | AWS/Kiro |
+| AWS handling of prompts or account data | AWS |
+| OpenCode core, plugin loader, or permissions | OpenCode |
+| User-controlled local configuration | The configuration owner |
 
 ## Reporting a vulnerability
 
-Please report security issues privately through GitHub. Open the repo's **Security** tab and choose **Report a vulnerability** to file a private advisory.
+Use the repository's **Security** tab and **Report a vulnerability** to submit a
+private GitHub security advisory:
 
-Do not open a public issue for security problems.
+<https://github.com/Laica-Lunasys/opencode-kiro/security/advisories/new>
 
-Include what you found, affected version, and steps to reproduce if you have them.
-
-## AI-generated reports
-
-Low-effort or obviously AI-generated security reports may be closed without a response. Please only open a report you have understood and verified yourself.
-
-## What to expect
-
-This is a single-maintainer project, so responses are best effort. Expect an initial acknowledgement within about 7 days. Fixes for confirmed issues are shipped as a new npm release and disclosed once a patch is available.
+Do not open a public issue for an undisclosed vulnerability. Include the affected
+version, impact, and reproducible steps, but remove credentials, account identifiers,
+and prompt data.

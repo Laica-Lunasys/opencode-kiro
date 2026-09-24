@@ -8,11 +8,11 @@
 // track, via the typed resource records those modules own (kept nested rather
 // than flattened so auth.ts/discovery.ts keep sole ownership of their fields):
 // - cwd / snapshot / generation / inflight  -> discovery.state
-// - eventIterator / eventTask               -> discovery
+// - eventController / eventTask              -> discovery
 // - loginChild / pollTimer / cancelPoll     -> auth
 // - ownedSdks                               -> aisdk
 // - disposers                               -> registration disposers, in order
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin } from "@opencode/plugin"
 import { type AisdkResources, createAisdkResources } from "./aisdk.js"
 import { type AuthResources, createAuthResources } from "./auth.js"
 import { type DiscoveryResources, createDiscoveryResources } from "./discovery.js"
@@ -43,8 +43,8 @@ export function createServerState(): ServerState {
 // covers its own resource contract internally with the same attempt-all
 // discipline: auth (kill login child, clear poll timer, settle pending poll,
 // dispose the integration registration), discovery (final generation bump so
-// pending discoveries are discarded, stop/await the event iterator via
-// return(), await the event task, dispose the catalog transform), aisdk
+// pending discoveries are discarded, abort/await the event subscription,
+// dispose the provider transform), aisdk
 // (dispose the hook registration, shutdown() each owned provider exactly
 // once). Sub-AggregateErrors are flattened so the combined report lists every
 // underlying failure once.

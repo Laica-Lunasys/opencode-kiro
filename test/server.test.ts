@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execFile } from "node:child_process"
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin } from "@opencode/plugin"
 import type { AuthStatus, ModelWithEfforts } from "kiro-acp-ai-provider"
 import { createKiroAcp, listModels, verifyAuthAsync } from "kiro-acp-ai-provider"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
@@ -135,17 +135,22 @@ type CatalogProviderRecord = {
   models: Map<string, MutableCatalogModel>
 }
 
-/**
- * Hand-built CatalogDraft mock. `provider.get` never upserts (matches the
- * installed d.ts contract the transform relies on to detect a rich models.dev
- * entry); `provider.update`/`model.update` initialize missing records.
- */
+/** Hand-built ProviderEditor mock used by the discovery transform tests. */
 function makeCatalogDraft() {
   const providers = new Map<string, CatalogProviderRecord>()
   const ensureProvider = (providerID: string): CatalogProviderRecord => {
     let record = providers.get(providerID)
-    if (record === undefined) {
-      record = { provider: { id: providerID, name: "", settings: {} }, models: new Map() }
+    if (!record) {
+      record = {
+        provider: {
+          id: providerID,
+          name: "",
+          activation: "auto",
+          package: "",
+          settings: {},
+        },
+        models: new Map(),
+      }
       providers.set(providerID, record)
     }
     return record
@@ -153,12 +158,19 @@ function makeCatalogDraft() {
   const ensureModel = (providerID: string, modelID: string): MutableCatalogModel => {
     const record = ensureProvider(providerID)
     let model = record.models.get(modelID)
-    if (model === undefined) {
+    if (!model) {
       model = {
+        id: modelID,
         modelID,
-        name: "",
+        providerID,
+        name: modelID,
+        enabled: true,
+        status: "active",
+        capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
         variants: [],
         settings: {},
+        time: { released: 0 },
+        cost: [],
         limit: { context: 0, output: 0 },
       }
       record.models.set(modelID, model)
@@ -166,31 +178,39 @@ function makeCatalogDraft() {
     return model
   }
   const draft = {
-    provider: {
-      list: () => [...providers.values()],
-      get: (providerID: string) => providers.get(providerID),
-      update(providerID: string, update: (provider: unknown) => void) {
-        update(ensureProvider(providerID).provider)
-      },
-      remove(providerID: string) {
-        providers.delete(providerID)
-      },
+    list: () => [...providers.values()],
+    get: (providerID: string) => providers.get(providerID),
+    add(input: { info: unknown; models: MutableCatalogModel[] }) {
+      const info = input.info as { id: string }
+      providers.set(info.id, {
+        provider: structuredClone(info),
+        models: new Map(input.models.map((model) => [model.id, structuredClone(model)])),
+      })
     },
-    model: {
-      get: (providerID: string, modelID: string) => providers.get(providerID)?.models.get(modelID),
+    update(providerID: string, update: (provider: unknown) => void) {
+      update(ensureProvider(providerID).provider)
+    },
+    remove(providerID: string) {
+      providers.delete(providerID)
+    },
+    models: {
+      set(providerID: string, models: MutableCatalogModel[]) {
+        ensureProvider(providerID).models = new Map(
+          models.map((model) => [model.id, structuredClone(model)]),
+        )
+      },
       update(providerID: string, modelID: string, update: (model: MutableCatalogModel) => void) {
         update(ensureModel(providerID, modelID))
       },
       remove(providerID: string, modelID: string) {
         providers.get(providerID)?.models.delete(modelID)
       },
-      default: { get: () => undefined, set: () => {} },
     },
   }
   return { draft, providers, ensureModel }
 }
 
-/** seed a rich models.dev-style Kiro entry into a catalog draft mock */
+/** seed a models.dev-style Kiro entry into a provider draft mock */
 function seedRichKiro(
   catalog: ReturnType<typeof makeCatalogDraft>,
   models: Array<{ key: string; modelID: string; [extra: string]: unknown }>,
@@ -250,15 +270,15 @@ function makeMockContext(init: { options?: Record<string, unknown> } = {}) {
   const events = createEventStream()
 
   const raw = {
+    location: { directory },
     integration: {
       transform: vi.fn(async (cb: (draft: unknown) => void) => {
         integrationTransformCb = cb
         return { dispose: disposeSpies.integration }
       }),
-      list: vi.fn(async () => ({ location: { directory } })),
       connection: { active, resolve: vi.fn(async () => undefined) },
     },
-    catalog: {
+    provider: {
       transform: vi.fn(async (cb: (draft: unknown) => void) => {
         catalogTransformCb = cb
         return { dispose: disposeSpies.catalog }
@@ -266,7 +286,6 @@ function makeMockContext(init: { options?: Record<string, unknown> } = {}) {
       reload,
     },
     aisdk: {
-      // hook(name, cb, options?) with ModelHookOptions {providerID?}
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       hook: vi.fn(async (name: string, cb: (event: any) => Promise<void> | void, options?: unknown) => {
         const dispose = vi.fn(async () => disposeSpies.hook())
@@ -274,8 +293,12 @@ function makeMockContext(init: { options?: Record<string, unknown> } = {}) {
         return { dispose }
       }),
     },
-    event: { subscribe: vi.fn(() => events.iterable) },
-    // present only when a test opts in — see the docblock above
+    event: {
+      subscribe: vi.fn((options?: { signal?: AbortSignal }) => {
+        options?.signal?.addEventListener("abort", () => void events.returned(), { once: true })
+        return events.iterable
+      }),
+    },
     ...(init.options !== undefined ? { options: init.options } : {}),
   }
 
@@ -385,10 +408,9 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("auth: Integration kiro + Kiro CLI Login OAuth", () => {
-  test("server plugin definition carries tui: true", () => {
-    // `tui?: boolean` (dist/promise/plugin.d.ts): the host auto-loads this
-    // package's ./tui entrypoint for npm-channel installs
-    expect(serverPlugin.tui).toBe(true)
+  test("server plugin exposes the stable v2 definition", () => {
+    expect(serverPlugin.id).toBe("kiro")
+    expect(typeof serverPlugin.setup).toBe("function")
   })
 
   test("registers integration kiro with a forms-shaped oauth method (no prompts anywhere)", async () => {
@@ -571,7 +593,7 @@ describe("auth: Integration kiro + Kiro CLI Login OAuth", () => {
 // ---------------------------------------------------------------------------
 
 describe("discovery: catalog transform + runtime model lifecycle", () => {
-  test("successful discovery publishes exact case-sensitive intersection and reloads once", async () => {
+  test("successful discovery publishes the exact runtime IDs and reloads once", async () => {
     const h = makeMockContext()
     h.active.mockResolvedValue({ integrationID: "kiro" })
     mockListModels.mockResolvedValue([runtime("claude-sonnet-4.6", { name: "Sonnet" })])
@@ -593,11 +615,11 @@ describe("discovery: catalog transform + runtime model lifecycle", () => {
 
     const record = catalog.providers.get("kiro")
     expect(record).toBeDefined()
-    expect([...record!.models.keys()]).toEqual(["sonnet"])
-    // rich models.dev metadata survives the transform
-    expect(record!.models.get("sonnet")).toMatchObject({
+    expect([...record!.models.keys()]).toEqual(["claude-sonnet-4.6"])
+    // models.dev metadata is retained while the runtime ID and name stay authoritative
+    expect(record!.models.get("claude-sonnet-4.6")).toMatchObject({
       modelID: "claude-sonnet-4.6",
-      name: "Claude Sonnet 4.6",
+      name: "Sonnet",
       release: "2025",
     })
     expect(record!.provider).toMatchObject({
@@ -646,7 +668,7 @@ describe("discovery: catalog transform + runtime model lifecycle", () => {
     const catalog = makeCatalogDraft()
     seedRichKiro(catalog, [{ key: "a", modelID: "model-a" }])
     h.catalogTransform(catalog.draft)
-    expect([...catalog.providers.get("kiro")!.models.keys()]).toEqual(["a"])
+    expect([...catalog.providers.get("kiro")!.models.keys()]).toEqual(["model-a"])
 
     await cleanup()
   })
@@ -817,7 +839,7 @@ describe("discovery: catalog transform + runtime model lifecycle", () => {
     await cleanup()
   })
 
-  test("provider settings contextWindows are keyed by API modelID with positive values only", async () => {
+  test("provider contextWindows use API model IDs and safe positive fallbacks", async () => {
     const h = makeMockContext()
     h.active.mockResolvedValue({ integrationID: "kiro" })
     mockListModels.mockResolvedValue([runtime("claude-sonnet-4.6"), runtime("zero-limit")])
@@ -833,7 +855,10 @@ describe("discovery: catalog transform + runtime model lifecycle", () => {
     h.catalogTransform(catalog.draft)
 
     const settings = catalog.providers.get("kiro")!.provider.settings
-    expect(settings.contextWindows).toEqual({ "claude-sonnet-4.6": 200_000 })
+    expect(settings.contextWindows).toEqual({
+      "claude-sonnet-4.6": 200_000,
+      "zero-limit": 1_000_000,
+    })
     await cleanup()
   })
 })
@@ -1464,8 +1489,8 @@ describe("aisdk sdk hook + lifecycle", () => {
 
   test("setup failure runs partial cleanup over earlier registrations and rethrows", async () => {
     const h = makeMockContext()
-    const bootError = new Error("catalog transform registration failed")
-    h.raw.catalog.transform.mockRejectedValue(bootError)
+    const bootError = new Error("provider transform registration failed")
+    h.raw.provider.transform.mockRejectedValue(bootError)
 
     await expect(serverPlugin.setup(h.context)).rejects.toBe(bootError)
 

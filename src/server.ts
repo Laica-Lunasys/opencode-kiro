@@ -1,20 +1,15 @@
-// Server plugin: setup composition. Registers the Integration/auth flow, the
-// catalog transform + discovery lifecycle, and the AISDK hooks over one
-// per-location ServerState with an aggregated cleanup (src/server/lifecycle.ts).
+// Server plugin: registers Kiro authentication, live provider discovery, and
+// AISDK hooks over one per-location state with aggregated cleanup.
 //
-// Installed-types note: `@opencode-ai/plugin` (root promise export) namespaces its
-// types as `Plugin.Plugin` / `Plugin.Context` / `Plugin.Cleanup` via
-// `export * as Plugin from "./plugin.js"`.
-import type { Plugin } from "@opencode-ai/plugin"
+// `@opencode/plugin` namespaces its promise API types as
+// `Plugin.Plugin`, `Plugin.Context`, and `Plugin.Cleanup`.
+import type { Plugin } from "@opencode/plugin"
 import { registerAisdkHook } from "./server/aisdk.js"
 import { registerAuth } from "./server/auth.js"
 import { type KiroPluginOptions, registerDiscovery } from "./server/discovery.js"
 import { buildCleanup, createServerState } from "./server/lifecycle.js"
 
-// Plugin options (npm channel only — bundled/builtin plugins receive {}).
-// Some hosts omit `context.options` entirely, so the ?? {} guard at the call
-// site is required. No `cwd` option by design — the per-location
-// integration.list() derivation is strictly better (discovery.ts).
+// No `cwd` option by design: OpenCode's per-location context is authoritative.
 //
 // Exactly four options: `agent` (default "opencode"), `mcpTimeout` (default
 // 45, must be a positive finite number of minutes), `discover` (default true),
@@ -50,12 +45,9 @@ function resolveStall(raw: unknown): KiroPluginOptions["stall"] {
   return Object.keys(stall).length > 0 ? stall : undefined
 }
 
-// setup order: resolve plugin options -> build per-location state ->
-// registerAuth (Integration `kiro` + Kiro CLI Login OAuth) -> registerDiscovery
-// (captures cwd from integration.list().location, registers the catalog
-// transform + event consumer, kicks off one initial discovery when already
-// connected and `discover` is not false) -> registerAisdkHook (plugin-owned
-// createKiroAcp provider) -> return the one aggregated, idempotent cleanup.
+// setup order: auth integration, runtime discovery/provider transform, then
+// plugin-owned AISDK hooks. Each registration contributes to one idempotent
+// cleanup function.
 //
 // Failure path: if any registration throws mid-setup, the partial cleanup runs
 // over the disposers registered so far (no leaked registrations) and the
@@ -63,9 +55,6 @@ function resolveStall(raw: unknown): KiroPluginOptions["stall"] {
 // swallowed so they cannot mask it.
 const plugin: Plugin.Plugin = {
   id: "kiro",
-  // tui: true (dist/promise/plugin.d.ts) — the host auto-loads this
-  // package's `./tui` entrypoint for npm-channel installs (single config entry)
-  tui: true,
   async setup(context: Plugin.Context): Promise<Plugin.Cleanup> {
     // `PluginOptions` is a loose Readonly<Record<string, any>> in the installed
     // d.ts; the runtime typeof checks in resolveOptions are the real guard
@@ -86,9 +75,8 @@ const plugin: Plugin.Plugin = {
   },
 }
 
-// default export drives opencode's plugin loader via the `./server` exports
-// subpath. The exports map deliberately has no "." key, so there is no root
-// fallback.
+// The root export is the server plugin; OpenCode auto-loads the sibling
+// `./tui` export when the package is active.
 export default plugin
 
 // named export, same reference as the default so the two can't drift (kept for backward compatibility)
