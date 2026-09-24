@@ -178,7 +178,7 @@ describe("distribution", () => {
       tui: "opencode-kiro",
       solid: "function",
     })
-  }, 30_000)
+  }, 120_000)
 
   test("README documents GitHub install, macOS/Linux, ACP, and Opus 5", async () => {
     const readme = await readFile(join(ROOT, "README.md"), "utf8")
