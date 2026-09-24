@@ -1,67 +1,39 @@
 {
-  "name": "opencode-kiro",
-  "version": "0.4.0",
-  "description": "The ACP-compliant Kiro plugin for opencode: auth via the official kiro-cli login, the live Kiro model lineup through the Agent Client Protocol, and TUI credits display",
+  "name": "@laica-lunasys/opencode-kiro",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Amazon Kiro models in OpenCode V2 via the official Kiro CLI ACP interface",
+  "type": "module",
   "license": "MIT",
-  "author": "Nacho F. Lizaur (https://github.com/NachoFLizaur)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NachoFLizaur/opencode-kiro.git"
+    "url": "git+https://github.com/Laica-Lunasys/opencode-kiro.git"
   },
-  "bugs": {
-    "url": "https://github.com/NachoFLizaur/opencode-kiro/issues"
-  },
-  "homepage": "https://github.com/NachoFLizaur/opencode-kiro#readme",
-  "type": "module",
   "exports": {
-    "./server": {
-      "types": "./dist/server.d.ts",
-      "default": "./dist/server.js"
-    },
-    "./tui": {
-      "types": "./dist/tui.d.ts",
-      "default": "./dist/tui.js"
-    },
-    "./package.json": "./package.json"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
-  "files": [
-    "dist"
-  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
   "scripts": {
-    "build": "tsup",
-    "pretest": "npm run build",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "check": "npm run typecheck && npm test && npm run build"
   },
   "engines": {
-    "node": ">=20",
-    "opencode": ">=1.16.0"
-  },
-  "peerDependencies": {
-    "@opencode-ai/plugin": "*"
+    "node": ">=20"
   },
   "dependencies": {
-    "kiro-acp-ai-provider": "3.0.0"
+    "kiro-acp-ai-provider": "3.2.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.16.2",
-    "@opentui/solid": "^0.3.4",
+    "@opencode/plugin": "2.0.16",
     "@types/node": "^20.19.42",
-    "solid-js": "^1.9.12",
-    "tsup": "^8.0.0",
-    "typescript": "^5.7.0",
-    "vitest": "^4.1.8"
-  },
-  "keywords": [
-    "opencode",
-    "opencode-plugin",
-    "kiro",
-    "kiro-cli",
-    "acp",
-    "agent-client-protocol",
-    "amazon-q",
-    "aws"
-  ]
+    "typescript": "^5.7.0"
+  }
 }
