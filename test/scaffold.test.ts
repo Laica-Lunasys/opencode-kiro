@@ -10,8 +10,11 @@ const execFile = promisify(execFileCallback)
 const ROOT = join(import.meta.dirname, "..")
 const tempDirs: string[] = []
 
-const npmCli = process.env.npm_execpath
-if (!npmCli) throw new Error("npm_execpath is required for package tests")
+const npmCli: string =
+  process.env.npm_execpath ??
+  (() => {
+    throw new Error("npm_execpath is required for package tests")
+  })()
 
 function runNpm(args: string[], cwd: string) {
   return execFile(process.execPath, [npmCli, ...args], { cwd })
