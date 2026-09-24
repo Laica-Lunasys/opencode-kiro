@@ -145,40 +145,44 @@ describe("distribution", () => {
     expect(files.some((file) => file.startsWith("test/"))).toBe(false)
   })
 
-  test("a packed install resolves both root and TUI entries with runtime dependencies", async () => {
-    const packDir = await mkdtemp(join(tmpdir(), "opencode-kiro-pack-"))
-    const consumer = await mkdtemp(join(tmpdir(), "opencode-kiro-consumer-"))
-    tempDirs.push(packDir, consumer)
+  test.skipIf(process.platform === "win32")(
+    "a packed install resolves both root and TUI entries with runtime dependencies",
+    async () => {
+      const packDir = await mkdtemp(join(tmpdir(), "opencode-kiro-pack-"))
+      const consumer = await mkdtemp(join(tmpdir(), "opencode-kiro-consumer-"))
+      tempDirs.push(packDir, consumer)
 
-    const { stdout } = await runNpm(
-      ["pack", "--json", "--pack-destination", packDir],
-      ROOT,
-    )
-    const packed = JSON.parse(stdout) as Array<{ filename: string }>
-    const tarball = join(packDir, packed[0]!.filename)
-    await writeFile(join(consumer, "package.json"), '{"private":true,"type":"module"}\n')
-    await runNpm(
-      ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball],
-      consumer,
-    )
+      const { stdout } = await runNpm(
+        ["pack", "--json", "--pack-destination", packDir],
+        ROOT,
+      )
+      const packed = JSON.parse(stdout) as Array<{ filename: string }>
+      const tarball = join(packDir, packed[0]!.filename)
+      await writeFile(join(consumer, "package.json"), '{"private":true,"type":"module"}\n')
+      await runNpm(
+        ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball],
+        consumer,
+      )
 
-    const probe = [
-      'const server = await import("opencode-kiro")',
-      'const tui = await import("opencode-kiro/tui")',
-      'const solid = await import("solid-js")',
-      'console.log(JSON.stringify({server:server.default.id,tui:tui.default.id,solid:typeof solid.createSignal}))',
-    ].join(";")
-    const { stdout: probeOutput } = await execFile(
-      process.execPath,
-      ["--input-type=module", "--eval", probe],
-      { cwd: consumer },
-    )
-    expect(JSON.parse(probeOutput)).toEqual({
-      server: "kiro",
-      tui: "opencode-kiro",
-      solid: "function",
-    })
-  }, 120_000)
+      const probe = [
+        'const server = await import("opencode-kiro")',
+        'const tui = await import("opencode-kiro/tui")',
+        'const solid = await import("solid-js")',
+        'console.log(JSON.stringify({server:server.default.id,tui:tui.default.id,solid:typeof solid.createSignal}))',
+      ].join(";")
+      const { stdout: probeOutput } = await execFile(
+        process.execPath,
+        ["--input-type=module", "--eval", probe],
+        { cwd: consumer },
+      )
+      expect(JSON.parse(probeOutput)).toEqual({
+        server: "kiro",
+        tui: "opencode-kiro",
+        solid: "function",
+      })
+    },
+    120_000,
+  )
 
   test("README documents GitHub install, macOS/Linux, ACP, and Opus 5", async () => {
     const readme = await readFile(join(ROOT, "README.md"), "utf8")
