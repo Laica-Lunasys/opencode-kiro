@@ -8,6 +8,20 @@ the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The Laica-Lunasys fork tracks stable OpenCode v2. The upstream v1 and prerelease
 history is retained below for attribution and reference.
 
+## [0.5.0-laica.2] - 2026-09-25
+
+### Fixed
+
+- Package exports now point directly to the TypeScript server and TUI entries, as
+  recommended by the stable OpenCode v2 plugin API. A global checkout works without
+  committing generated `dist` files or running lifecycle scripts.
+- The macOS/Linux quick start now uses the verified global plugin checkout path.
+  OpenCode 2.0.16's optional Git package target is documented with its observed
+  `git dep preparation failed` caveat.
+- Package integration tests invoke npm portably and avoid the unsupported OpenTUI
+  native consumer-install smoke on Windows; all remaining tests run on all three CI
+  operating systems.
+
 ## [0.5.0-laica.1] - 2026-09-25
 
 ### Added

@@ -36,11 +36,17 @@ kiro-cli login
 kiro-cli whoami
 ```
 
-Install this public GitHub fork directly with OpenCode:
+Install this public fork into OpenCode's global plugin directory:
 
 ```bash
-opencode plugin add github:Laica-Lunasys/opencode-kiro#main
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins/opencode-kiro"
+git clone --depth 1 https://github.com/Laica-Lunasys/opencode-kiro.git "$PLUGIN_DIR"
+npm --prefix "$PLUGIN_DIR" ci --omit=dev --ignore-scripts
 ```
+
+OpenCode discovers immediate package directories under `~/.config/opencode/plugins/`
+automatically, so the default setup needs no config edit. `XDG_CONFIG_HOME` is honored
+on both Linux and macOS.
 
 Then register the existing Kiro CLI session with OpenCode:
 
@@ -58,28 +64,28 @@ opencode models
 opencode run --model kiro/claude-opus-5 "Reply with OK"
 ```
 
-For a reproducible install, use the release tag instead of `main`:
+Update the checkout later with:
 
 ```bash
-opencode plugin add github:Laica-Lunasys/opencode-kiro#v0.5.0-laica.1
+git -C "$PLUGIN_DIR" pull --ff-only
+npm --prefix "$PLUGIN_DIR" ci --omit=dev --ignore-scripts
 ```
 
-Update or remove it with OpenCode's plugin manager:
-
-```bash
-opencode plugin update github:Laica-Lunasys/opencode-kiro#main
-opencode plugin remove github:Laica-Lunasys/opencode-kiro#main
-```
+OpenCode's v2 documentation also supports npm-compatible Git targets such as
+`github:Laica-Lunasys/opencode-kiro#main`. OpenCode 2.0.16 can report
+`git dep preparation failed` for Git targets on some systems; the checkout method
+above avoids that installer path and is the verified option.
 
 ## Configuration
 
-`opencode plugin add` writes the package entry for you. The equivalent configuration
-is:
+No configuration is required for the default global checkout. To pass options,
+reference that checkout from `~/.config/opencode/opencode.jsonc` (the relative path is
+resolved from the config file):
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["github:Laica-Lunasys/opencode-kiro#main"]
+  "plugins": ["./plugins/opencode-kiro"]
 }
 ```
 
@@ -89,7 +95,7 @@ Options use the object form:
 {
   "plugins": [
     {
-      "package": "github:Laica-Lunasys/opencode-kiro#main",
+      "package": "./plugins/opencode-kiro",
       "options": {
         "agent": "opencode",
         "mcpTimeout": 45,

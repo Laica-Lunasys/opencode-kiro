@@ -1,7 +1,7 @@
 # Compatibility
 
 This fork targets the stable OpenCode v2 plugin API and the official Kiro CLI ACP
-transport. The versions below are exact build and test pins for `0.5.0-laica.1`.
+transport. The versions below are exact build and test pins for `0.5.0-laica.2`.
 
 | Component | Tested version | Notes |
 |---|---:|---|
@@ -24,22 +24,20 @@ transport. The versions below are exact build and test pins for `0.5.0-laica.1`.
 Both systems require `kiro-cli` and `opencode` on `PATH`. Kiro CLI owns credentials in
 the platform-appropriate store; this plugin does not read or copy them.
 
-## Install targets
+## Install target
 
-Track the fork's main branch:
-
-```bash
-opencode plugin add github:Laica-Lunasys/opencode-kiro#main
-```
-
-For reproducible installs, use the release tag:
+Use a global plugin checkout on OpenCode 2.0.16:
 
 ```bash
-opencode plugin add github:Laica-Lunasys/opencode-kiro#v0.5.0-laica.1
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins/opencode-kiro"
+git clone --depth 1 https://github.com/Laica-Lunasys/opencode-kiro.git "$PLUGIN_DIR"
+npm --prefix "$PLUGIN_DIR" ci --omit=dev --ignore-scripts
 ```
 
-OpenCode supports npm-compatible Git specifications for public and private package
-plugins. No clone path, global npm install, or manually generated tarball is required.
+OpenCode discovers the package directory automatically. Its documented
+`github:Laica-Lunasys/opencode-kiro#main` target is also valid syntax, but the 2.0.16
+installer can fail during Git dependency preparation on some systems. The checkout
+path avoids that installer behavior and uses the same source export.
 
 ## Validation
 

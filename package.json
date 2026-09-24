@@ -1,6 +1,6 @@
 {
   "name": "opencode-kiro",
-  "version": "0.5.0-laica.1",
+  "version": "0.5.0-laica.2",
   "description": "OpenCode v2 plugin for Amazon Kiro through the official kiro-cli ACP interface",
   "license": "MIT",
   "author": "Nacho F. Lizaur (https://github.com/NachoFLizaur)",
