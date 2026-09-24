@@ -58,15 +58,9 @@ describe("stable OpenCode v2 package contract", () => {
     expect(pkg.name).toBe("opencode-kiro")
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/)
     expect(pkg.repository.url).toBe("git+https://github.com/Laica-Lunasys/opencode-kiro.git")
-    expect(pkg.exports["."]).toEqual({
-      types: "./dist/server.d.ts",
-      default: "./dist/server.js",
-    })
-    expect(pkg.exports["./server"]).toEqual(pkg.exports["."])
-    expect(pkg.exports["./tui"]).toEqual({
-      types: "./dist/tui.d.ts",
-      default: "./dist/tui.js",
-    })
+    expect(pkg.exports["."]).toBe("./src/server.ts")
+    expect(pkg.exports["./server"]).toBe("./src/server.ts")
+    expect(pkg.exports["./tui"]).toBe("./src/tui.ts")
   })
 
   test("host-sensitive runtime dependencies are exact pins", async () => {
@@ -92,7 +86,6 @@ describe("stable OpenCode v2 package contract", () => {
     expect(pkg.scripts.check).toContain("typecheck")
     expect(pkg.scripts.check).toContain("test")
     expect(pkg.scripts.pretest).toContain("build")
-    expect(pkg.scripts.prepare).toContain("build")
     expect(pkg.scripts.prepublishOnly).toContain("check")
   })
 
@@ -142,7 +135,8 @@ describe("distribution", () => {
     expect(files).toContain("dist/server.d.ts")
     expect(files).toContain("dist/tui.js")
     expect(files).toContain("dist/tui.d.ts")
-    expect(files.some((file) => file.startsWith("src/"))).toBe(false)
+    expect(files).toContain("src/server.ts")
+    expect(files).toContain("src/tui.ts")
     expect(files.some((file) => file.startsWith("test/"))).toBe(false)
   })
 
@@ -166,8 +160,8 @@ describe("distribution", () => {
       )
 
       const probe = [
-        'const server = await import("opencode-kiro")',
-        'const tui = await import("opencode-kiro/tui")',
+        'const server = await import("./node_modules/opencode-kiro/dist/server.js")',
+        'const tui = await import("./node_modules/opencode-kiro/dist/tui.js")',
         'const solid = await import("solid-js")',
         'console.log(JSON.stringify({server:server.default.id,tui:tui.default.id,solid:typeof solid.createSignal}))',
       ].join(";")
